@@ -58,14 +58,28 @@ class PacketCapture:
         interfaces = []
         self.interface_map.clear()
 
-        for iface in IFACES.values():
-            display_name = iface.description or iface.name
-            if display_name and iface.name:
-                self.interface_map[display_name] = iface.name
-                interfaces.append(display_name)
+        try:
+            for iface in IFACES.values():
+                display_name = iface.description or iface.name
+                if display_name and iface.name:
+                    self.interface_map[display_name] = iface.name
+                    interfaces.append(display_name)
 
-        interfaces.sort()
-        return interfaces
+            interfaces.sort()
+            
+            if not interfaces:
+                # Fallback: use basic interface list
+                from scapy.all import get_if_list
+                basic_interfaces = get_if_list()
+                for iface in basic_interfaces:
+                    self.interface_map[iface] = iface
+                    interfaces.append(iface)
+            
+            return interfaces
+        except Exception as e:
+            print(f"[WARNING] Error getting interfaces: {e}")
+            # Return empty list so UI doesn't crash
+            return []
 
     def select_interface(self, interface_display_name):
         """Convert UI-selected friendly name to actual NPF device name used by Scapy."""
@@ -92,6 +106,7 @@ class PacketCapture:
     def _sniff_loop(self):
         """Run Scapy sniff with a stop_filter so it can exit when self.running becomes False."""
         try:
+            print(f"[INFO] Starting packet capture on interface: {self.interface}")
             sniff(
                 iface=self.interface,
                 prn=self._packet_callback,
@@ -100,9 +115,17 @@ class PacketCapture:
                 stop_filter=lambda pkt: not self.running
             )
         except PermissionError as e:
-            print(f"[ERROR] Permission denied while sniffing: {e}. Try running as Administrator.")
+            print(f"[ERROR] Permission denied: {e}")
+            print(f"[ERROR] Make sure you're running as Administrator!")
+            self.running = False
+        except OSError as e:
+            print(f"[ERROR] Interface error: {e}")
+            print(f"[ERROR] Interface '{self.interface}' might not exist or Npcap is not installed")
+            print(f"[ERROR] Install Npcap from: https://npcap.com/")
+            self.running = False
         except Exception as e:
             print(f"[ERROR] Sniffing failed: {e}")
+            self.running = False
 
     def _parse_packet(self, pkt):
         """Extract Source, Destination, Protocol, Length, Info for UI display."""

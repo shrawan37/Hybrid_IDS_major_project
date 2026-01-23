@@ -2,11 +2,29 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import json
 import os
+import ctypes
+
+def is_admin():
+    """Check if running as administrator on Windows"""
+    try:
+        return ctypes.windll.shell.IsUserAnAdmin()
+    except:
+        return False
 
 class ThreatLogWindow:
     def __init__(self, root):
         self.root = root
-        self.root.title("Threat Log")
+        self.root.title("Threat Log - IP Blocking Tool")
+        
+        # Check admin privileges on Windows
+        if os.name == 'nt' and not is_admin():
+            messagebox.showwarning("⚠️ Admin Rights Required", 
+                "IP blocking feature requires Administrator privileges.\n\n"
+                "To use blocking:\n"
+                "1. Close this window\n"
+                "2. Right-click PowerShell → 'Run as administrator'\n"
+                "3. Run: python threat_log.py\n\n"
+                "You can still view logs without admin rights.")
 
         # Treeview to display logs in a table-like format
         self.tree = ttk.Treeview(root, columns=("Attack", "Timestamp", "Source IP", "Destination IP", "Protocol", "Source Port", "Dest Port", "Payload Preview"), show="headings")
@@ -100,12 +118,19 @@ class ThreatLogWindow:
                 messagebox.showinfo("Blocked", f"IP address {ip_address} has been blocked successfully.")
             elif os.name == 'nt':  # For Windows
                 # Windows requires admin permissions for netsh command
-                command = f"netsh advfirewall firewall add rule name=\"Block {ip_address}\" dir=in action=block remoteip={ip_address}"
+                command = f"netsh advfirewall firewall add rule name=\"BlockIDS_{ip_address}\" dir=in action=block remoteip={ip_address}"
                 result = os.system(command)
                 if result == 0:
-                    messagebox.showinfo("Blocked", f"IP address {ip_address} has been blocked successfully.")
+                    messagebox.showinfo("✅ Success", f"IP {ip_address} has been blocked successfully via Windows Firewall.")
                 else:
-                    messagebox.showerror("Error", f"Failed to block IP {ip_address}. Make sure you are running as administrator.")
+                    messagebox.showerror("⚠️ Admin Required", 
+                        f"Failed to block IP {ip_address}.\n\n"
+                        f"This requires Administrator privileges.\n\n"
+                        f"Please:\n"
+                        f"1. Close this program\n"
+                        f"2. Open PowerShell as Administrator\n"
+                        f"3. Run: python threat_log.py\n"
+                        f"4. Try blocking again")
             else:
                 messagebox.showerror("Error", "Unsupported OS for blocking IP.")
         except Exception as e:

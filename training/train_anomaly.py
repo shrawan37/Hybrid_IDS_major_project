@@ -13,7 +13,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 # Load Dataset
 COLUMN_NAMES = [
-    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes', 'land',
+    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes', 'l+and',
     'wrong_fragment', 'urgent', 'hot', 'num_failed_logins', 'logged_in',
     'num_compromised', 'root_shell', 'su_attempted', 'num_root', 'num_file_creations',
     'num_shells', 'num_access_files', 'num_outbound_cmds', 'is_hot_logins',
@@ -128,4 +128,3 @@ plt.ylabel('True Positive Rate')
 plt.title('Receiver Operating Characteristic (ROC) Curve')
 plt.legend(loc='lower right')
 plt.show()
-

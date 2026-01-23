@@ -1,42 +1,52 @@
 {
-    "SQL Injection": [
-        "(?i)\\b(UNION|SELECT|DELETE|ALTER)\\b",
-        "(?i)\\b(UNION\\s+SELECT|SELECT\\s+.+?\\s+FROM)\\b",
-        "(?i)\\b(INSERT\\s+INTO|UPDATE\\s+.+?\\s+SET|DELETE\\s+FROM)\\b",
-        "(?i)\\b(DROP|ALTER|TRUNCATE|EXEC|DECLARE|xp_cmdshell)\\b",
-        "(?i)\\b(OR\\s*1=1|OR\\s*'a'='a'|OR\\s*'1'='1')\\b"
-    ],
-    "XSS Attack": [
-        "(?i)(<script.*?>.*?</script>)",
-        "(?i)(&lt;script.*?&gt;.*?&lt;/script&gt;)",
-        "(?i)(onerror\\s*=\\s*['\"]?javascript:|eval\\s*\\()",
-        "(?i)(document\\.cookie|document\\.write|window\\.location)"
-        
-    ],
-    "DDoS Attack": [
-        "(?i)\\b(flood|slowloris|syn flood|http flood|r u dead yet|hulk|botnet|malware)\\b"
-    ],
-    "Port Scan": [
-        "(?i)\\b(nmap|masscan|zmap|portscan|scanme|netcat|nc)\\b"
-    ],
-    "ARP Spoofing": [
-        "(?i)\\b(arp\\s+reply|who has|tell me your mac|arp spoof)\\b"
-    ],
-    "DNS Tunneling": [
-        "([A-Za-z0-9+/=]{16,}\\.[A-Za-z0-9+/=.-]{16,})"
-    ],
-    "SMB Exploit": [
-        "(?i)\\b(eternalblue|smbghost|ms17-010|wannacry)\\b"
-    ],
-    "FTP Brute Force": [
-        "(?i)(USER\\s+\\S+\\s+PASS\\s+\\S+)",
-        "(?i)(530\\s+Login\\s+incorrect|Failed password for)"
-    ],
-    "SSH Attack": [
-        "(?i)\\b(ssh-rsa|Invalid user|Failed password for|Connection closed by authenticating user)\\b"
-    ],
-    "Email Phishing": [
-        "(?i)\\b(verify your account|click here to verify|urgent action required|free offer|claim your prize)\\b",
-        "(?i)\\b(congratulations you won|update your payment info|your account has been suspended)\\b"
-    ]
+  "sql_injection": {
+    "pattern": "(?i)('.*OR|UNION.*SELECT|DROP|DELETE.*FROM|INSERT.*INTO|exec.*sp_|xp_cmdshell|';)",
+    "severity": 0.95,
+    "description": "SQL Injection attempt detected"
+  },
+  "xss": {
+    "pattern": "(?i)(<script|javascript:|onerror|onclick|alert\\(|<img|<iframe)",
+    "severity": 0.90,
+    "description": "Cross-Site Scripting (XSS) attack detected"
+  },
+  "ddos": {
+    "pattern": "(?i)(flood|dos|slowloris)",
+    "severity": 0.85,
+    "description": "Potential DDoS/flooding attack detected"
+  },
+  "port_scan": {
+    "pattern": "(?i)(nmap|masscan|zmap|portscan)",
+    "severity": 0.80,
+    "description": "Port scanning activity detected"
+  },
+  "arp_spoofing": {
+    "pattern": "(?i)(arp.*spoof|gratuitous|duplicate.*ip)",
+    "severity": 0.85,
+    "description": "ARP spoofing or manipulation detected"
+  },
+  "dns_tunneling": {
+    "pattern": "(?i)(dns.*tunnel|dns-over|doh)",
+    "severity": 0.70,
+    "description": "DNS tunneling detected"
+  },
+  "smb_exploit": {
+    "pattern": "(?i)(eternalblue|smbghost|wannacry)",
+    "severity": 0.90,
+    "description": "SMB exploitation attempt detected"
+  },
+  "ftp_brute_force": {
+    "pattern": "(?i)(ftp.*auth|ftp.*fail)",
+    "severity": 0.75,
+    "description": "FTP brute force attempt detected"
+  },
+  "ssh_attack": {
+    "pattern": "(?i)(ssh.*fail|invalid.*user)",
+    "severity": 0.85,
+    "description": "SSH attack detected"
+  },
+  "email_phishing": {
+    "pattern": "(?i)(verify|urgent action|click here)",
+    "severity": 0.75,
+    "description": "Phishing attempt detected"
+  }
 }

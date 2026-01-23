@@ -1,273 +1,228 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from packetcapture import PacketCapture
 from packet_info import show_packet_info
 from datetime import datetime
 from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS
+import threading
+import time
+import requests
 
 class IDS_UI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Intrusion Detection System ")
-        self.root.geometry("1400x800")
+        self.root.title("🚨 Intrusion Detection System (IDS)")
+        self.root.geometry("1400x900")
+        self.root.configure(bg="#0f0f1e")
         
-        # Packet capture instance with the updated implementation
+        # Packet capture instance
         self.capture = PacketCapture()
         self.capturing = False
         
-        # Store packets for display
-        self.packets_list = []      # Parsed packet info for display
-        self.raw_packets = []       # Store actual Scapy packets for details
-        self.display_limit = 100    # Show last 100 packets
+        # Store packets
+        self.packets_list = []
+        self.raw_packets = []
+        self.display_limit = 100
         
         # Protocol statistics
-        self.protocol_counts = {
-            'TCP': 0,
-            'UDP': 0, 
-            'ICMP': 0,
-            'ARP': 0,
-            'Other': 0
-        }
-        
-        # Threat counter
+        self.protocol_counts = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'ARP': 0, 'Other': 0}
         self.threat_count = 0
+        self.total_packet_count = 0  # Global counter for S.N
         
-        # Create UI components
+        # Alert debounce
+        self.last_alert_time = 0
+        self.alert_cooldown = 2
+        
+        # Create UI
         self.create_widgets()
         
     def create_widgets(self):
-        # ========== HEADER FRAME ==========
-        header_frame = tk.Frame(self.root, bg="#1a1a2e", height=120)
-        header_frame.pack(fill=tk.X)
-        header_frame.pack_propagate(False)
+        """Create simplified UI with better layout"""
+        
+        # ===== TOP CONTROL BAR =====
+        top_frame = tk.Frame(self.root, bg="#1a1a2e", height=100)
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+        top_frame.pack_propagate(False)
         
         # Title
-        title_label = tk.Label(
-            header_frame,
-            text="🚨 Intrusion Detection System - Live Packet Capture",
-            font=("Consolas", 18, "bold"),
-            fg="#00ff9d",
-            bg="#1a1a2e"
+        title = tk.Label(
+            top_frame,
+            text="🚨 Intrusion Detection System - Real-time Network Monitor",
+            font=("Arial", 14, "bold"),
+            bg="#1a1a2e",
+            fg="#00ff9d"
         )
-        title_label.pack(pady=(15, 5))
+        title.pack(pady=(5, 10))
         
-        # Network Interface Info
-        interface_info = tk.Label(
-            header_frame,
-            text="[Module 1@ MITSC] VM: R4.802.11w-PCX-AWx_2  |  [Live Capture Mode]",
-            font=("Consolas", 10),
-            fg="#8a8aff",
-            bg="#1a1a2e"
-        )
-        interface_info.pack(pady=5)
+        # Controls Row 1: Interface Selection
+        control_row1 = tk.Frame(top_frame, bg="#1a1a2e")
+        control_row1.pack(fill=tk.X, padx=10)
         
-        # Status Bar
-        self.status_label = tk.Label(
-            header_frame,
-            text="Status: Ready | Select interface and click Start Capture",
-            font=("Consolas", 9),
-            fg="#ffcc00",
-            bg="#1a1a2e"
-        )
-        self.status_label.pack(pady=5)
+        tk.Label(control_row1, text="📡 Select Interface:", bg="#1a1a2e", fg="white", 
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(0, 10))
         
-        # ========== CONTROL FRAME ==========
-        control_frame = tk.Frame(self.root, bg="#16213e", height=70)
-        control_frame.pack(fill=tk.X)
-        control_frame.pack_propagate(False)
+        # Get interfaces
+        try:
+            interfaces = self.capture.get_available_interfaces()
+        except Exception as e:
+            interfaces = []
+            messagebox.showerror("Error", f"Failed to get interfaces: {e}")
         
-        # Left side - Interface selection
-        left_control = tk.Frame(control_frame, bg="#16213e")
-        left_control.pack(side=tk.LEFT, padx=20, pady=15)
+        if not interfaces:
+            interfaces = ["No interfaces found"]
         
-        tk.Label(left_control, text="📡 Network Interface:", 
-                bg="#16213e", fg="white", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+        self.interface_var = tk.StringVar(value=interfaces[0] if interfaces else "")
         
-        self.interface_var = tk.StringVar()
-        interfaces = self.capture.get_available_interfaces()
-        
-        interface_frame = tk.Frame(left_control, bg="#16213e")
-        interface_frame.pack(pady=5)
-        
+        # Interface dropdown - SIMPLIFIED
         self.interface_combo = ttk.Combobox(
-            interface_frame, 
+            control_row1,
             textvariable=self.interface_var,
-            values=interfaces, 
-            width=45,
+            values=interfaces,
             state="readonly",
+            width=40,
             font=("Arial", 10)
         )
-        self.interface_combo.pack(side=tk.LEFT)
+        self.interface_combo.pack(side=tk.LEFT, padx=5)
         
-        if interfaces:
-            self.interface_combo.set(interfaces[0])
-        else:
-            self.interface_combo.set("No interfaces found")
-            self.interface_combo.config(state="disabled")
-        
-        # Right side - Buttons
-        right_control = tk.Frame(control_frame, bg="#16213e")
-        right_control.pack(side=tk.RIGHT, padx=20, pady=15)
+        # Controls Row 2: Buttons
+        control_row2 = tk.Frame(top_frame, bg="#1a1a2e")
+        control_row2.pack(fill=tk.X, padx=10, pady=(5, 0))
         
         self.start_btn = tk.Button(
-            right_control, 
-            text="▶ START CAPTURE", 
+            control_row2,
+            text="▶ START",
             command=self.start_capture,
             bg="#00b894",
             fg="white",
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=5,
-            relief=tk.RAISED,
-            bd=2
+            font=("Arial", 10, "bold"),
+            width=12,
+            cursor="hand2"
         )
         self.start_btn.pack(side=tk.LEFT, padx=5)
         
         self.stop_btn = tk.Button(
-            right_control, 
-            text="⏹ STOP CAPTURE", 
+            control_row2,
+            text="⏹ STOP",
             command=self.stop_capture,
             bg="#e74c3c",
             fg="white",
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=5,
-            relief=tk.RAISED,
-            bd=2,
-            state=tk.DISABLED
+            font=("Arial", 10, "bold"),
+            width=12,
+            state=tk.DISABLED,
+            cursor="hand2"
         )
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         
         clear_btn = tk.Button(
-            right_control,
+            control_row2,
             text="🗑 CLEAR",
             command=self.clear_packets,
             bg="#3498db",
             fg="white",
-            font=("Arial", 11),
-            padx=15,
-            pady=5
+            font=("Arial", 10),
+            width=12,
+            cursor="hand2"
         )
         clear_btn.pack(side=tk.LEFT, padx=5)
         
-        # ========== STATISTICS FRAME ==========
+        tk.Label(control_row2, text="", bg="#1a1a2e").pack(side=tk.LEFT, expand=True)
+        
+        # Status label
+        self.status_label = tk.Label(
+            control_row2,
+            text="Status: Ready",
+            bg="#1a1a2e",
+            fg="#ffcc00",
+            font=("Arial", 10, "bold")
+        )
+        self.status_label.pack(side=tk.RIGHT, padx=10)
+        
+        # ===== STATISTICS BAR =====
         stats_frame = tk.Frame(self.root, bg="#0f3460", height=50)
         stats_frame.pack(fill=tk.X)
         stats_frame.pack_propagate(False)
         
         self.stats_label = tk.Label(
             stats_frame,
-            text="📊 Statistics: Packets: 0 | TCP: 0 | UDP: 0 | ICMP: 0 | ARP: 0 | Other: 0 | Threats: 0",
+            text="📊 Packets: 0 | TCP: 0 | UDP: 0 | ICMP: 0 | ARP: 0 | Other: 0 | 🚨 Threats: 0",
             bg="#0f3460",
             fg="white",
             font=("Consolas", 10, "bold")
         )
-        self.stats_label.pack(pady=15)
+        self.stats_label.pack(pady=8)
         
-        # ========== PACKET TABLE FRAME ==========
+        # ===== MAIN CONTENT: Packet Table =====
         table_frame = tk.Frame(self.root, bg="#2d3436")
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Create Treeview (Table) for packet display - WIRESHARK STYLE
-        columns = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Info", "Threat")
+        # Title
+        tk.Label(
+            table_frame,
+            text="📋 Live Packet Capture",
+            bg="#2d3436",
+            fg="#00ff9d",
+            font=("Arial", 11, "bold")
+        ).pack(anchor=tk.W, padx=10, pady=(5, 0))
+        
+        # Treeview for packets
+        columns = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Threat")
         
         style = ttk.Style()
-        style.configure("Treeview", 
-                       background="#1e272e",
-                       foreground="white",
-                       fieldbackground="#1e272e",
-                       font=("Consolas", 9))
+        style.configure("Treeview", background="#1e272e", foreground="white", 
+                       fieldbackground="#1e272e", font=("Consolas", 9))
+        style.configure("Treeview.Heading", background="#2d3436", foreground="#00ff9d", 
+                       font=("Consolas", 9, "bold"))
         
-        style.configure("Treeview.Heading",
-                       background="#2d3436",
-                       foreground="#00ff9d",
-                       font=("Consolas", 9, "bold"),
-                       relief=tk.FLAT)
+        tree_frame = tk.Frame(table_frame, bg="#1e272e")
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.packet_tree = ttk.Treeview(
-            table_frame, 
-            columns=columns, 
-            show="headings", 
-            height=20,
-            style="Treeview"
-        )
+        self.packet_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15, style="Treeview")
         
-        # Define column headings with Wireshark-like widths
-        column_configs = [
-            ("No.", 50, "center"),
-            ("Time", 120, "center"),
-            ("Source", 180, "w"),
-            ("Destination", 180, "w"),
-            ("Protocol", 80, "center"),
-            ("Length", 70, "center"),
-            ("Info", 350, "w"),
-            ("Threat", 100, "center")
-        ]
-        
-        for col, width, anchor in column_configs:
+        # Configure columns
+        col_widths = {"No.": 40, "Time": 100, "Source": 150, "Destination": 150, "Protocol": 70, "Length": 70, "Threat": 150}
+        for col, width in col_widths.items():
             self.packet_tree.heading(col, text=col)
-            self.packet_tree.column(col, width=width, anchor=anchor, minwidth=50)
+            self.packet_tree.column(col, width=width, anchor="w" if col != "Length" else "center")
         
-        # Add scrollbars
-        v_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.packet_tree.yview)
-        h_scroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.packet_tree.xview)
+        # Scrollbars
+        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.packet_tree.yview)
+        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.packet_tree.xview)
         self.packet_tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         
         # Grid layout
         self.packet_tree.grid(row=0, column=0, sticky="nsew")
         v_scroll.grid(row=0, column=1, sticky="ns")
         h_scroll.grid(row=1, column=0, sticky="ew")
-        
-        # Configure grid weights
-        table_frame.grid_rowconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
         
         # Bind events
         self.packet_tree.bind("<Double-1>", self.show_packet_details)
-        self.packet_tree.bind("<Button-3>", self.show_context_menu)
         
-        # ========== DETECTION LOG FRAME ==========
-        log_frame = tk.Frame(self.root, bg="#1a1a2e", height=180)
-        log_frame.pack(fill=tk.X)
+        # ===== BOTTOM: Detection LOG =====
+        log_frame = tk.Frame(self.root, bg="#1a1a2e", height=150)
+        log_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
         log_frame.pack_propagate(False)
         
-        log_header = tk.Frame(log_frame, bg="#1a1a2e")
-        log_header.pack(fill=tk.X, padx=15, pady=(10, 5))
+        tk.Label(log_frame, text="📋 Detection Log", bg="#1a1a2e", fg="#00ff9d", 
+                font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=10, pady=(5, 0))
         
-        tk.Label(log_header, text="📋 DETECTION LOG", 
-                font=("Arial", 12, "bold"),
-                bg="#1a1a2e", fg="#00ff9d").pack(side=tk.LEFT)
-        
-        tk.Label(log_header, text="[Real-time alerts and system messages]",
-                font=("Arial", 9, "italic"),
-                bg="#1a1a2e", fg="#8a8aff").pack(side=tk.LEFT, padx=10)
-        
-        # Log text area with scrollbar
         log_text_frame = tk.Frame(log_frame, bg="#0d1117")
-        log_text_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        log_text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.log_text = tk.Text(
-            log_text_frame, 
-            height=8, 
-            bg="#0d1117", 
-            fg="#8b949e",
-            font=("Consolas", 9),
-            wrap=tk.WORD,
-            relief=tk.FLAT,
-            insertbackground="white"
-        )
-        
+        self.log_text = tk.Text(log_text_frame, height=7, bg="#0d1117", fg="#8b949e",
+                               font=("Consolas", 9), wrap=tk.WORD, relief=tk.FLAT)
         log_scroll = tk.Scrollbar(log_text_frame, command=self.log_text.yview)
         self.log_text.config(yscrollcommand=log_scroll.set)
         
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Initial log message
-        self.add_log("System initialized. Ready to capture packets.")
-        self.add_log(f"Found {len(interfaces) if interfaces else 0} network interfaces.")
+        # Initial log
+        self.add_log("✅ System initialized. Select interface and click START")
+        self.add_log(f"✅ Found {len(interfaces)} network interface(s)")
         
-        # ========== START PACKET DISPLAY UPDATE ==========
+        # Start update loop
         self.update_packet_display()
         
     def start_capture(self):
@@ -322,6 +277,10 @@ class IDS_UI:
         # Clear stored packets
         self.packets_list.clear()
         self.raw_packets.clear()
+        self.total_packet_count = 0  # Reset counter
+        self.protocol_counts = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'ARP': 0, 'Other': 0}
+        self.threat_count = 0
+        self.add_log("✅ Packet list cleared")
         
         # Reset counters
         self.protocol_counts = {k: 0 for k in self.protocol_counts}
@@ -356,6 +315,35 @@ class IDS_UI:
         
         # Auto-scroll to bottom
         self.log_text.see(tk.END)
+
+    def show_threat_alert(self, source_ip, threat_reason, dest_ip):
+        """Show a pop-up alert when threat is detected (non-blocking)"""
+        # Debounce alerts - don't show too many in quick succession
+        current_time = time.time()
+        if current_time - self.last_alert_time < self.alert_cooldown:
+            return
+        
+        self.last_alert_time = current_time
+        
+        # Show alert in a separate thread so it doesn't block the UI
+        def show_alert():
+            alert_message = f"""🚨 THREAT DETECTED! 🚨
+
+Attack Type: {threat_reason}
+Source IP:  {source_ip}
+Target IP:  {dest_ip}
+Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚠️ Take action if this is suspicious!"""
+            
+            try:
+                messagebox.showwarning("🚨 THREAT ALERT 🚨", alert_message)
+            except Exception as e:
+                print(f"Alert error: {e}")
+        
+        # Run in separate thread to avoid blocking
+        alert_thread = threading.Thread(target=show_alert, daemon=True)
+        alert_thread.start()
 
     def update_packet_display(self):
         """Periodically update the packet display by consuming from packet_queue"""
@@ -400,12 +388,19 @@ class IDS_UI:
                             self.threat_count += 1
                             # Log the threat
                             self.add_log(f"🚨 THREAT DETECTED: {threat} from {src}", "threat")
+                            # Show alert pop-up
+                            self.show_threat_alert(src, threat, dst)
                     except Exception as e:
                         # Fallback to basic threat detection
                         threat = self.basic_threat_detection(packet)
                         if threat:
                             self.threat_count += 1
                             self.add_log(f"🚨 BASIC THREAT: {threat} from {src}", "threat")
+                            # Show alert pop-up
+                            self.show_threat_alert(src, threat, dst)
+                    
+                    # Increment global packet counter
+                    self.total_packet_count += 1
                     
                     # Keep only last N packets
                     if len(self.raw_packets) > self.display_limit:
@@ -414,18 +409,17 @@ class IDS_UI:
                         if self.packet_tree.get_children():
                             self.packet_tree.delete(self.packet_tree.get_children()[0])
                     
-                    # Insert into Treeview
+                    # Insert into Treeview (7 columns: No., Time, Source, Destination, Protocol, Length, Threat)
                     item_id = self.packet_tree.insert(
                         "",
                         tk.END,
                         values=(
-                            len(self.packet_tree.get_children()) + 1,
+                            self.total_packet_count,
                             datetime.now().strftime("%H:%M:%S.%f")[:-3],
                             src,
                             dst,
                             display_proto,
                             length,
-                            parsed_info["info"],
                             threat
                         )
                     )
@@ -657,3 +651,6 @@ if __name__ == "__main__":
     
     app = IDS_UI(root)
     root.mainloop()
+
+requests.get("http://127.0.0.1:8000/?id=1' OR '1'='1")
+print("✓ SQL Injection sent")
