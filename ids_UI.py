@@ -1,5 +1,46 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import sys
+import os
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+def get_writable_path(filename):
+    """Get a writable path for files (like databases) that need to be updated.
+    If running as bundled exe, copies the template from _MEIPASS to the app directory if it doesn't exist.
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as bundled exe
+        app_dir = os.path.dirname(sys.executable)
+        target_path = os.path.join(app_dir, filename)
+        
+        # If the file doesn't exist in the app directory, copy it from the bundle
+        if not os.path.exists(target_path):
+            try:
+                import shutil
+                source_path = resource_path(filename)
+                if os.path.exists(source_path):
+                    shutil.copy2(source_path, target_path)
+            except Exception as e:
+                print(f"Error copying {filename} to writable location: {e}")
+        return target_path
+    
+    # Running in development
+    return os.path.abspath(filename)
+
+print("Starting IDS UI...")
+print(f"Current Directory: {os.getcwd()}")
+
+# Add src directory to path to ensure imports work
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
 from packetcapture import PacketCapture
 from packet_info import show_packet_info
 from datetime import datetime
@@ -12,7 +53,8 @@ from active_response import ActiveResponse
 from notifications import NotificationSystem
 from reporting import ReportGenerator
 from traffic_logger import TrafficLogger
-
+from db_manager import DatabaseManager
+from auth_manager import AuthManager
 
 class IDS_UI:
     def __init__(self, root):
@@ -21,22 +63,20 @@ class IDS_UI:
         self.root.geometry("1400x900")
         self.root.configure(bg="#0f0f1e")
         
+        # Initialize database and auth manager
+        self.db_manager = DatabaseManager(get_writable_path("users.db"))
+        self.auth_manager = AuthManager(self.db_manager)
+        self.current_user = None
+        
+        # Configure styles
+        self.configure_styles()
+        
         # Whitelist trusted/internal networks to reduce false positives
         self.whitelist_ranges = [
-              # Private network
-            "192.168.1.0/25",# Private network (Home/Office)
-            "10.0.0.0/8",        # Private network (Enterprise)
-            "172.16.0.0/12",     # Private network
-             # Localhost
-            "140.82.112.0/24",   # GitHub
-            "140.82.113.0/24",   # GitHub
-            "13.64.0.0/11",      # Azure
-            "13.96.0.0/13",      # Azure
-            "13.104.0.0/14",     # Azure
-            "40.64.0.0/10",      # Azure
-            "40.128.0.0/9",      # Azure
-            "52.160.0.0/11",     # Azure
-            "20.0.0.0/8",        # Azure
+            "192.168.1.0/25", "10.0.0.0/8", "172.16.0.0/12",
+            "140.82.112.0/24", "140.82.113.0/24", "13.64.0.0/11",
+            "13.96.0.0/13", "13.104.0.0/14", "40.64.0.0/10",
+            "40.128.0.0/9", "52.160.0.0/11", "20.0.0.0/8",
         ]
         
         # Packet capture instance - delay initialization to prevent freeze
@@ -46,12 +86,12 @@ class IDS_UI:
         # Store packets
         self.packets_list = []
         self.raw_packets = []
-        self.display_limit = 10000  # Keep up to 10,000 packets (removes very old ones if memory is needed)
+        self.display_limit = 10000
         
         # Protocol statistics
         self.protocol_counts = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'ARP': 0, 'Other': 0}
         self.threat_count = 0
-        self.total_packet_count = 0  # Global counter for S.N
+        self.total_packet_count = 0
         
         # Alert debounce
         self.last_alert_time = 0
@@ -62,13 +102,10 @@ class IDS_UI:
         self.threat_detection_thread = None
         self.stop_threat_worker = False
         
-        # Batch display updates
-        self.pending_display_updates = []
         self.ui_update_lock = threading.Lock()
         
         # New Modules
         self.active_response = ActiveResponse()
-        # NOTE: Email config should ideally be from a settings file. Using placeholders.
         self.notifications = NotificationSystem(
             sender_email="alerts@yourdomain.com", 
             sender_password="yourpassword", 
@@ -78,20 +115,164 @@ class IDS_UI:
         self.traffic_logger = TrafficLogger()
         self.auto_block_var = tk.BooleanVar(value=False)
         
-        # Create UI
+        # Show login screen initially
+        print("Calling show_login_screen...")
+        self.show_login_screen()
+        print("__init__ complete.")
 
+    def configure_styles(self):
+        """Configure application styles"""
+        # Set color scheme
+        self.bg_color = "#1a1a2e"
+        self.secondary_bg = "#16213e"
+        self.accent_color = "#0f3460"
+        self.button_color = "#e94560"
+        self.text_color = "#eee"
+        self.input_bg = "#0f3460"
+        
+        # Configure ttk styles
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Button style
+        style.configure('Custom.TButton', background=self.button_color, foreground='white', borderwidth=0, focuscolor='none', font=('Segoe UI', 11, 'bold'), padding=10)
+        style.map('Custom.TButton', background=[('active', '#d63447')])
+        
+        # Entry style
+        style.configure('Custom.TEntry', fieldbackground=self.input_bg, foreground=self.text_color, borderwidth=2, relief='flat', font=('Segoe UI', 10))
+
+    def clear_screen(self):
+        """Clear all widgets from the screen"""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+    def show_login_screen(self):
+        """Display the login screen"""
+        print("Entering show_login_screen...")
+        self.clear_screen()
+        print("Screen cleared.")
+        self.root.geometry("500x600")
+        self.root.configure(bg=self.bg_color)
+        
+        container = tk.Frame(self.root, bg=self.bg_color)
+        container.place(relx=0.5, rely=0.5, anchor='center')
+        
+        title = tk.Label(container, text="Welcome Back!", font=('Segoe UI', 28, 'bold'), bg=self.bg_color, fg=self.text_color)
+        title.pack(pady=(0, 10))
+        
+        subtitle = tk.Label(container, text="Login to your account", font=('Segoe UI', 12), bg=self.bg_color, fg='#aaa')
+        subtitle.pack(pady=(0, 30))
+        
+        tk.Label(container, text="Username", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.login_username = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, bd=2)
+        self.login_username.pack(pady=(0, 20), ipady=8)
+        
+        tk.Label(container, text="Password", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.login_password = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, show='●', bd=2)
+        self.login_password.pack(pady=(0, 30), ipady=8)
+        
+        login_btn = tk.Button(container, text="LOGIN", font=('Segoe UI', 12, 'bold'), bg=self.button_color, fg='white', relief='flat', cursor='hand2', command=self.handle_login, width=28, bd=0)
+        login_btn.pack(pady=(0, 20), ipady=10)
+        login_btn.bind('<Enter>', lambda e: login_btn.config(bg='#d63447'))
+        login_btn.bind('<Leave>', lambda e: login_btn.config(bg=self.button_color))
+        
+        signup_frame = tk.Frame(container, bg=self.bg_color)
+        signup_frame.pack()
+        tk.Label(signup_frame, text="Don't have an account?", font=('Segoe UI', 10), bg=self.bg_color, fg='#aaa').pack(side='left', padx=(0, 5))
+        signup_link = tk.Label(signup_frame, text="Sign Up", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.button_color, cursor='hand2')
+        signup_link.pack(side='left')
+        signup_link.bind('<Button-1>', lambda e: self.show_signup_screen())
+        self.login_password.bind('<Return>', lambda e: self.handle_login())
+
+    def show_signup_screen(self):
+        """Display the signup screen"""
+        self.clear_screen()
+        container = tk.Frame(self.root, bg=self.bg_color)
+        container.place(relx=0.5, rely=0.5, anchor='center')
+        
+        tk.Label(container, text="Create Account", font=('Segoe UI', 28, 'bold'), bg=self.bg_color, fg=self.text_color).pack(pady=(0, 10))
+        tk.Label(container, text="Sign up to get started", font=('Segoe UI', 12), bg=self.bg_color, fg='#aaa').pack(pady=(0, 30))
+        
+        tk.Label(container, text="Username", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.signup_username = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, bd=2)
+        self.signup_username.pack(pady=(0, 15), ipady=8)
+        
+        tk.Label(container, text="Email (Optional)", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.signup_email = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, bd=2)
+        self.signup_email.pack(pady=(0, 15), ipady=8)
+        
+        tk.Label(container, text="Password", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.signup_password = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, show='●', bd=2)
+        self.signup_password.pack(pady=(0, 15), ipady=8)
+        
+        tk.Label(container, text="Confirm Password", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.text_color).pack(anchor='w', pady=(0, 5))
+        self.signup_confirm = tk.Entry(container, font=('Segoe UI', 11), bg=self.input_bg, fg=self.text_color, insertbackground=self.text_color, relief='flat', width=30, show='●', bd=2)
+        self.signup_confirm.pack(pady=(0, 30), ipady=8)
+        
+        signup_btn = tk.Button(container, text="SIGN UP", font=('Segoe UI', 12, 'bold'), bg=self.button_color, fg='white', relief='flat', cursor='hand2', command=self.handle_signup, width=28, bd=0)
+        signup_btn.pack(pady=(0, 20), ipady=10)
+        signup_btn.bind('<Enter>', lambda e: signup_btn.config(bg='#d63447'))
+        signup_btn.bind('<Leave>', lambda e: signup_btn.config(bg=self.button_color))
+        
+        login_frame = tk.Frame(container, bg=self.bg_color)
+        login_frame.pack()
+        tk.Label(login_frame, text="Already have an account?", font=('Segoe UI', 10), bg=self.bg_color, fg='#aaa').pack(side='left', padx=(0, 5))
+        login_link = tk.Label(login_frame, text="Login", font=('Segoe UI', 10, 'bold'), bg=self.bg_color, fg=self.button_color, cursor='hand2')
+        login_link.pack(side='left')
+        login_link.bind('<Button-1>', lambda e: self.show_login_screen())
+        self.signup_confirm.bind('<Return>', lambda e: self.handle_signup())
+
+    def handle_login(self):
+        """Handle login success"""
+        username = self.login_username.get().strip()
+        password = self.login_password.get()
+        if not username or not password:
+            messagebox.showerror("Error", "Please enter both username and password")
+            return
+        success, message = self.auth_manager.login_user(username, password)
+        if success:
+            self.current_user = username
+            messagebox.showinfo("Success", f"{message}\n\nLaunching IDS Dashboard...")
+            self.start_main_ids_ui()
+        else:
+            messagebox.showerror("Login Failed", message)
+
+    def handle_signup(self):
+        """Handle signup success"""
+        username = self.signup_username.get().strip()
+        password = self.signup_password.get()
+        confirm = self.signup_confirm.get()
+        email = self.signup_email.get().strip() or None
+        if not username or not password:
+            messagebox.showerror("Error", "Username and password are required")
+            return
+        if password != confirm:
+            messagebox.showerror("Error", "Passwords do not match")
+            return
+        success, message = self.auth_manager.register_user(username, password, email)
+        if success:
+            messagebox.showinfo("Success", "Account created successfully!")
+            self.show_login_screen()
+        else:
+            messagebox.showerror("Signup Failed", message)
+
+    def start_main_ids_ui(self):
+        """Transition from Login to Main IDS UI"""
+        self.clear_screen()
+        self.root.geometry("1400x900")
+        self.root.configure(bg="#0f0f1e")
+        
+        # Initialize IDS Widgets
         self.create_widgets()
         
-        # Initialize packet capture after UI is loaded
+        # Initialize packet capture
         self.root.after(1000, self._init_packet_capture)
         
-        # Start threat detection worker thread
+        # Start threat detection worker
         self.start_threat_detection_worker()
-
-        # Auto-start if requested (for testing)
-        import os
-        if os.environ.get("IDS_AUTO_START") == "1":
-            self.root.after(3000, self.start_capture)
+        
+        # Start display loop
+        self.update_packet_display()
 
         
     def create_widgets(self):
@@ -294,7 +475,11 @@ class IDS_UI:
     def _init_packet_capture(self):
         """Initialize packet capture after UI is loaded (prevents freeze)"""
         try:
-            self.capture = PacketCapture()
+            self.capture = PacketCapture(
+                model_path=resource_path("models/isolation_forest.pkl"),
+                scaler_path=resource_path("models/scaler.pkl"),
+                encoder_path=resource_path("models/encoder.pkl")
+            )
             self.add_log("✅ Packet capture ready")
             
             # Now get available interfaces
@@ -454,15 +639,19 @@ class IDS_UI:
         recent_threats = {}  # Track recent threats to reduce false positive alerts
         threat_cooldown = 5  # seconds between same threat from same IP
         
+        print(f"DEBUG: Threat detection worker started for user {self.current_user}")
         while not self.stop_threat_worker:
             try:
-                # Process threat queue items slowly to avoid CPU spike
                 if self.threat_queue:
                     item = self.threat_queue.pop(0)
                     packet = item.get("packet")
                     src = item.get("src")
                     dst = item.get("dst")
                     pkt_num = item.get("pkt_num")
+                    
+                    # Log packet being processed every 50 packets to show activity
+                    if pkt_num % 50 == 0:
+                        print(f"DEBUG: Worker processing Packet #{pkt_num}. Queue depth: {len(self.threat_queue)}")
                     
                     threat = ""
                     try:
@@ -477,6 +666,7 @@ class IDS_UI:
                             result = self.capture.hybrid_engine.analyze(packet, feat_dict)
                             if result.get("malicious"):
                                 threat = "⚠ " + ", ".join(result.get("reasons", []))
+                                print(f"[WORKER] 🔥 THREAT DETECTED on Packet #{pkt_num}: {threat}")
                                 with self.ui_update_lock:
                                     self.threat_count += 1
                                     
@@ -519,15 +709,20 @@ class IDS_UI:
                                 self.traffic_logger.log_traffic(feat_dict, is_malicious=False)
 
                     except Exception as e:
+                        print(f"DEBUG: Worker Analysis Error on Packet #{pkt_num}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         pass
                     
                     # Update the treeview with threat info if found
-                    if threat and pkt_num is not None:
+                    if threat:
+                        print(f"DEBUG: Triggering UI Update for Packet #{pkt_num} - {threat}")
                         self.root.after(0, lambda t=threat, pn=pkt_num: self._update_threat_display(pn, t))
                 
                 time.sleep(0.001)  # Process threats quickly
             except Exception as e:
-                pass
+                print(f"DEBUG: Worker Main Loop Error: {e}")
+                time.sleep(1)
 
 
     def _update_threat_display(self, pkt_num, threat):
@@ -536,15 +731,14 @@ class IDS_UI:
             children = self.packet_tree.get_children()
             for item in children:
                 values = list(self.packet_tree.item(item, "values"))
-                if values[0] == pkt_num:  # Match packet number
-                    # Update threat column (index 7 now, was 6)
-                    # values = (No, Time, Src, Dst, Proto, Len, Details, Threat)
+                if str(values[0]) == str(pkt_num):  # Match packet number (string comparison)
                     new_values = list(values)
                     new_values[7] = threat 
                     self.packet_tree.item(item, values=new_values)
                     # Red background for threat with bright red text
                     self.packet_tree.item(item, tags=("threat",))
                     self.packet_tree.tag_configure("threat", background="#4d0000", foreground="#ff4444")
+                    print(f"DEBUG: Found and updated UI for Packet #{pkt_num} with threat: {threat}")
                     break
         except:
             pass
@@ -570,6 +764,8 @@ class IDS_UI:
             while not self.capture.packet_queue.empty() and packets_processed < batch_limit:
                 try:
                     pkt_info = self.capture.packet_queue.get()
+                    if self.total_packet_count % 10 == 0:
+                         print(f"DEBUG: Processed {self.total_packet_count} packets so far...")
                     
                     # Extract parsed fields
                     src = pkt_info.get("src", "Unknown")
@@ -924,13 +1120,41 @@ class IDS_UI:
 
 # Main application
 if __name__ == "__main__":
-    root = tk.Tk()
-    
-    # Set application icon (optional)
     try:
-        root.iconbitmap("icon.ico")  # Add your icon file if available
-    except:
-        pass
-    
-    app = IDS_UI(root)
-    root.mainloop()
+        print("Main block started...")
+        root = tk.Tk()
+        print("Tkinter root created.")
+        
+        # Set application icon (optional)
+        try:
+            root.iconbitmap("icon.ico")
+            print("Icon set.")
+        except:
+            print("Icon skip/fail.")
+            pass
+        
+        print("Initializing IDS_UI...")
+        app = IDS_UI(root)
+        print("IDS_UI initialized. Entering mainloop...")
+        root.mainloop()
+        print("Mainloop exited.")
+    except Exception as e:
+        import traceback
+        error_msg = f"CRITICAL ERROR:\n{str(e)}\n\n{traceback.format_exc()}"
+        print(error_msg)
+        # Use a secondary hidden root if the primary one failed or was destroyed
+        try:
+            temp_root = tk.Tk()
+            temp_root.withdraw()
+            messagebox.showerror("Unified IDS - Critical Error", error_msg)
+            temp_root.destroy()
+        except:
+            # Fallback if even Tkinter is broken
+            with open("crash_log.txt", "w") as f:
+                f.write(error_msg)
+        
+        # Keep console open if launched via command line
+        print("\n" + "="*50)
+        print("Application has crashed. See error above.")
+        print("="*50)
+        input("Press Enter to close...")

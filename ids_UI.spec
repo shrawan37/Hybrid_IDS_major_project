@@ -3,10 +3,14 @@
 
 a = Analysis(
     ['ids_UI.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[
+        ('models', 'models'),
+        ('config.yaml', '.'),
+        ('users.db', '.'),
+    ],
+    hiddenimports=['sklearn.utils._cython_blas', 'sklearn.neighbors.typedefs', 'sklearn.neighbors.quad_tree', 'sklearn.tree._utils'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -19,20 +23,29 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='ids_UI',
+    exclude_binaries=True,
+    name='IDS_System',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='IDS_System',
 )
