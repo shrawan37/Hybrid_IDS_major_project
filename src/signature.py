@@ -4,6 +4,7 @@ import time
 import json
 import re
 import os
+import sys
 from scapy.all import Raw
 from urllib.parse import unquote
 
@@ -41,19 +42,22 @@ class SignatureEngine:
     def load_signatures(self, signatures_path):
         """Load attack signatures from JSON file"""
         try:
+            # Handle PyInstaller _MEIPASS if running as a bundle
+            if hasattr(sys, '_MEIPASS'):
+                signatures_path = os.path.join(sys._MEIPASS, "models", "signatures.json")
+            
             # Try relative path first
             if not os.path.exists(signatures_path):
                 # Try from src directory
-                signatures_path = os.path.join(os.path.dirname(__file__), "..", signatures_path)
+                signatures_path = os.path.join(os.path.dirname(__file__), "..", "models", "signatures.json")
             
             if os.path.exists(signatures_path):
-                with open(signatures_path, 'r') as f:
+                with open(signatures_path, 'r', encoding='utf-8') as f:
                     self.signatures = json.load(f)
-                # Silent load - debug output removed to keep UI startup clean
             else:
                 print(f"⚠️ Signatures file not found: {signatures_path}")
         except Exception as e:
-            print(f"❌ Error loading signatures: {e}")
+            print(f"❌ Error loading signatures: {str(e)}")
 
     def is_whitelisted(self, ip):
         """Check if IP is in whitelist (returns True if whitelisted)"""

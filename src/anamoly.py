@@ -84,6 +84,9 @@ class AnomalyEngine:
             prediction = self.model.predict(X_scaled)[0]   # -1 = anomaly, 1 = normal
             score = self.model.decision_function(X_scaled)[0]
 
+            if prediction == -1 or score < 0.1: # Show even borderline cases
+                print(f"[ANOMALY DEBUG] Pred: {prediction}, Score: {score:.4f} | Malicious: {prediction == -1}")
+
             return {
                 "malicious": prediction == -1,
                 "score": float(score),
