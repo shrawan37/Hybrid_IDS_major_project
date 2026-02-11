@@ -22,6 +22,15 @@ class HybridEngine:
             }
 
         # 2. Anomaly-based detection (Second Line of Defense)
+<<<<<<< HEAD
+=======
+        # Skip anomaly detection for whitelisted IPs or IPv6 to reduce noise and CPU load
+        # (Current model is optimized for IPv4 NSL-KDD patterns)
+        src_ip = feat.get("src_ip", "")
+        if ":" in src_ip or self.sig.is_whitelisted(src_ip):
+            return {'malicious': False, 'reasons': [], 'score': 0.0}
+            
+>>>>>>> main
         # Only run if signature check failed (optimization)
         anom_result = self.anom.analyze(feat)
         anom_mal = anom_result.get("malicious", False)
@@ -34,7 +43,11 @@ class HybridEngine:
 
         reasons = []
         if anom_mal:
+<<<<<<< HEAD
             reasons.append("Anomaly Detected")
+=======
+            reasons.append("Suspicious Behaviour")
+>>>>>>> main
 
         return {
             'malicious': malicious,

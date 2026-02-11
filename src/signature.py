@@ -4,12 +4,19 @@ import time
 import json
 import re
 import os
+<<<<<<< HEAD
 import sys
+=======
+>>>>>>> main
 from scapy.all import Raw
 from urllib.parse import unquote
 
 class SignatureEngine:
+<<<<<<< HEAD
     def __init__(self, syn_threshold=50, scan_port_threshold=30, window=2.0, blacklist=None, signatures_path="models/signatures.json"):
+=======
+    def __init__(self, syn_threshold=100, scan_port_threshold=30, window=2.0, blacklist=None, signatures_path="models/signatures.json"):
+>>>>>>> main
         # Behavioral detection thresholds
         self.syn_counts = defaultdict(list)
         self.port_scans = defaultdict(set)
@@ -20,10 +27,18 @@ class SignatureEngine:
         
         # Whitelist internal/trusted networks to reduce false positives
         self.whitelist_ranges = [
+<<<<<<< HEAD
             "192.168.0.0/16",    # Private network
             "10.0.0.0/8",        # Private network
             "172.16.0.0/12",     # Private network
             "127.0.0.1/32",      # Localhost
+=======
+            "192.168.0.0/16", 
+            "192.168.0.0/24"   # Private network
+            "10.0.0.0/8",        # Private network
+            "172.16.0.0/12",     # Private network
+            # "127.0.0.1/32",      # Removed from whitelist for local testing
+>>>>>>> main
             "140.82.112.0/24",   # GitHub
             "140.82.113.0/24",   # GitHub
             "13.64.0.0/11",      # Azure
@@ -33,6 +48,13 @@ class SignatureEngine:
             "40.128.0.0/9",      # Azure
             "52.160.0.0/11",     # Azure
             "20.0.0.0/8",        # Azure
+<<<<<<< HEAD
+=======
+            # IPv6 local and multicast ranges
+            "fe80::/10",         # Link-local
+            "ff00::/8",          # Multicast
+            "::1/128",           # Loopback
+>>>>>>> main
         ]
         
         # Load signature patterns from JSON
@@ -42,6 +64,7 @@ class SignatureEngine:
     def load_signatures(self, signatures_path):
         """Load attack signatures from JSON file"""
         try:
+<<<<<<< HEAD
             # Handle PyInstaller _MEIPASS if running as a bundle
             if hasattr(sys, '_MEIPASS'):
                 signatures_path = os.path.join(sys._MEIPASS, "models", "signatures.json")
@@ -58,6 +81,21 @@ class SignatureEngine:
                 print(f"⚠️ Signatures file not found: {signatures_path}")
         except Exception as e:
             print(f"❌ Error loading signatures: {str(e)}")
+=======
+            # Try relative path first
+            if not os.path.exists(signatures_path):
+                # Try from src directory
+                signatures_path = os.path.join(os.path.dirname(__file__), "..", signatures_path)
+            
+            if os.path.exists(signatures_path):
+                with open(signatures_path, 'r') as f:
+                    self.signatures = json.load(f)
+                # Silent load - debug output removed to keep UI startup clean
+            else:
+                print(f"⚠️ Signatures file not found: {signatures_path}")
+        except Exception as e:
+            print(f"❌ Error loading signatures: {e}")
+>>>>>>> main
 
     def is_whitelisted(self, ip):
         """Check if IP is in whitelist (returns True if whitelisted)"""
@@ -134,10 +172,18 @@ class SignatureEngine:
         from scapy.layers.inet import TCP, IP, UDP
         t = time.time()
 
+<<<<<<< HEAD
         if IP not in pkt:
             return (False, None, 0.0)
 
         src = pkt[IP].src
+=======
+        from scapy.layers.inet6 import IPv6
+        if IP not in pkt and IPv6 not in pkt:
+            return (False, None, 0.0)
+
+        src = pkt[IP].src if IP in pkt else pkt[IPv6].src
+>>>>>>> main
 
         # NOTE: We DO NOT return early for whitelisted IPs anymore.
         # We want to detect SQLi/XSS even from internal "trusted" users (Insider Threat).
@@ -179,7 +225,11 @@ class SignatureEngine:
             except Exception as e:
                 pass  # Silent fail for payload extraction
 
+<<<<<<< HEAD
         # TCP SYN flood & Port Scan detection
+=======
+        # TCP SYN flood & Port Scan detection (Only for TCP packets)
+>>>>>>> main
         # IMPORTANT: Only enforce behavioral limits on NON-WHITELISTED IPs
         if TCP in pkt and not self.is_whitelisted(src):
             tcp = pkt[TCP]
@@ -192,6 +242,7 @@ class SignatureEngine:
                 if len(self.syn_counts[src]) >= self.syn_threshold:
                     return (True, "SYN flood", 0.9)
 
+<<<<<<< HEAD
             # Port-scan detection (same src hitting many dst ports)
             dst_port = tcp.dport
             key = src
@@ -199,6 +250,17 @@ class SignatureEngine:
             # Check if port scan threshold reached
             if len(self.port_scans[key]) >= self.scan_port_threshold:
                 return (True, "port scan", 0.85)
+=======
+            # Port-scan detection: only count SYN packets (connection attempts)
+            # This prevents server replies to ephemeral ports from being flagged as scans
+            if flags == 0x02:  # Only SYN flag
+                dst_port = tcp.dport
+                key = src
+                self.port_scans[key].add(dst_port)
+                # Check if port scan threshold reached
+                if len(self.port_scans[key]) >= self.scan_port_threshold:
+                    return (True, "port scan", 0.85)
+>>>>>>> main
 
         # Could add other signature checks (ICMP flood, etc.)
         return (False, None, 0.0)

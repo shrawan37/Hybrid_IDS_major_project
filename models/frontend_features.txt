@@ -1,0 +1,20 @@
+Frontend Features for Production Model
+==================================================
+
+ 1. srv_count
+ 2. service
+ 3. dst_host_srv_count
+ 4. dst_host_same_srv_rate
+ 5. count
+ 6. dst_host_count
+ 7. rerror_rate
+ 8. logged_in
+ 9. flag_SF
+10. srv_rerror_rate
+11. protocol_type_tcp
+12. dst_host_srv_rerror_rate
+13. dst_host_rerror_rate
+14. src_bytes
+15. dst_bytes
+16. dst_host_same_src_port_rate
+17. protocol_type_udp

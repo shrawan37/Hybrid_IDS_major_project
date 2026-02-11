@@ -19,7 +19,11 @@ def print_step(num, name):
     print(f"\n[{num}/4] {name}")
     print("-" * 60)
 
+<<<<<<< HEAD
 target = "localhost:8000"
+=======
+target = "http://localhost:8000"
+>>>>>>> main
 
 try:
     print_header("🚨 IDS ATTACK DEMONSTRATION")
@@ -77,7 +81,11 @@ try:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(0.3)
+<<<<<<< HEAD
             sock.connect_ex(('127.0.0.1', port))
+=======
+            sock.connect_ex(('127.0.0.1', ))
+>>>>>>> main
             sock.close()
             print(f"  Scanned port {port}")
             time.sleep(0.1)

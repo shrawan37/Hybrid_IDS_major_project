@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Dataset Configuration
 dataset:
   name: "NSL-KDD"
@@ -29,3 +30,33 @@ system:
   realtime: true
   batch_size: 1000
   alert_threshold: 0.85
+=======
+dataset:
+  name: NSL-KDD
+  path: ./data/raw/NSL-KDD/
+  test_file: KDDTest+.txt
+  train_file: KDDTrain+.txt
+features:
+  categorical:
+  - protocol_type
+  - service
+  - flag
+  numerical:
+  - duration
+  - src_bytes
+  - dst_bytes
+  target: label
+model:
+  anomaly:
+    contamination: 0.5
+    n_estimators: 200
+    random_state: 42
+    type: IsolationForest
+signatures:
+  rule_path: models/signatures.json
+  update_interval: 3600
+system:
+  alert_threshold: 0.85
+  batch_size: 1000
+  realtime: true
+>>>>>>> main

@@ -31,7 +31,12 @@ class PacketCapture:
         encoder_path="models/encoder.pkl"
     ):
         # Queue consumed by IDS_UI.update_packet_display()
+<<<<<<< HEAD
         self.packet_queue = Queue()
+=======
+        # Limited size to prevent memory leaks during high traffic
+        self.packet_queue = Queue(maxsize=1000)
+>>>>>>> main
 
         # Runtime state
         self.running = False
@@ -212,6 +217,7 @@ class PacketCapture:
 
         # Push parsed details into queue (instead of raw packet only)
         # IMPORTANT: We don't do threat detection here to avoid blocking the sniffer thread
+<<<<<<< HEAD
         self.packet_queue.put({
             "packet": packet,
             "src": src,
@@ -220,6 +226,20 @@ class PacketCapture:
             "length": length,
             "info": info
         })
+=======
+        try:
+            self.packet_queue.put_nowait({
+                "packet": packet,
+                "src": src,
+                "dst": dst,
+                "proto": proto,
+                "length": length,
+                "info": info
+            })
+        except:
+            # Queue full, drop packet to maintain real-time performance
+            pass
+>>>>>>> main
         
         # NOTE: Threat detection is now handled by the UI thread's worker
         # This callback must stay very fast to prevent packet loss

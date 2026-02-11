@@ -1,0 +1,160 @@
+================================================================================
+          HYBRID INTRUSION DETECTION SYSTEM (IDS) - REMOTE TESTING GUIDE
+================================================================================
+Project: Real-time IDS with Signature & AI-based Anomaly Detection
+Testing Mode: Cross-Network (Two Different PCs)
+Author: SARVAN (Final Major Project)
+================================================================================
+
+This guide explains how to test the IDS from a separate "Attacker" machine 
+targeting the "Victim" machine where the IDS is running.
+
+--------------------------------------------------------------------------------
+1. NETWORK TOPOLOGY SETUP
+--------------------------------------------------------------------------------
+1. VICTIM PC (The Protected Server):
+   - IP Address: [Run 'ipconfig' to find your IPv4, e.g., 192.168.1.10]
+   - Runs the IDS (ids_UI.py)
+   - Runs the Web Server (python -m http.server 8000)
+
+2. ATTACKER PC (The Threat Actor):
+   - Can be any PC on the same WiFi/Network.
+   - Runs browsers or python scripts targeting the Victim's IP.
+
+CRITICAL: On the VICTIM PC, you may need to allow Port 8000 in Windows Firewall:
+- Windows Search -> "Firewall with Advanced Security" -> Inbound Rules
+- New Rule -> Port -> TCP -> 8000 -> Allow the connection.
+
+--------------------------------------------------------------------------------
+2. VICTIM PC PREPARATION
+--------------------------------------------------------------------------------
+1. Open PowerShell as ADMINISTRATOR.
+2. Activate environment: .\.venv\Scripts\Activate.ps1
+3. Launch IDS: python ids_UI.py
+4. In another PowerShell (Normal): python -m http.server 8000
+
+--------------------------------------------------------------------------------
+3. SIGNATURE-BASED ATTACK METHODOLOGY (12 SIGNATURES)
+--------------------------------------------------------------------------------
+On the ATTACKER PC, use a browser or 'curl' to send the following payloads 
+targeting the Victim's IP (Replace <VICTIM_IP> with the actual IP).
+
+1. SQL INJECTION (sql_injection)
+   - Action: Visit http://<VICTIM_IP>:8000/?id=1' OR '1'='1
+   - Expected: Threat "⚠ Signature: sql_injection" in RED.
+
+2. CROSS-SITE SCRIPTING (xss_payload)
+   - Action: Visit http://<VICTIM_IP>:8000/?q=<script>alert('xss')</script>
+   - Expected: Threat "⚠ Signature: xss_payload" in RED.
+
+3. COMMAND INJECTION (command_injection)
+   - Action: Visit http://<VICTIM_IP>:8000/?cmd=;whoami
+   - Expected: Threat "⚠ Signature: command_injection" in RED.
+
+4. PATH TRAVERSAL (path_traversal)
+   - Action: Visit http://<VICTIM_IP>:8000/../../etc/passwd
+   - Expected: Threat "⚠ Signature: path_traversal" in RED.
+
+5. XXE INJECTION (xxe_injection)
+   - Action: (Using PowerShell/CMD) 
+     curl -X POST -d '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>' http://<VICTIM_IP>:8000/
+   - Expected: Threat "⚠ Signature: xxe_injection" in RED.
+
+6. LDAP INJECTION (ldap_injection)
+   - Action: Visit http://<VICTIM_IP>:8000/?user=*)(| (uid=*))
+   - Expected: Threat "⚠ Signature: ldap_injection" in RED.
+
+7. WEB SHELL DETECTION (web_shell)
+   - Action: (Using PowerShell/CMD)
+     curl -X POST -d "code=eval($_POST['cmd'])" http://<VICTIM_IP>:8000/
+   - Expected: Threat "⚠ Signature: web_shell" in RED.
+
+8. MALWARE COMMANDS (malware_signature)
+   - Action: Visit http://<VICTIM_IP>:8000/?exec=powershell.exe -nop -w hidden
+   - Expected: Threat "⚠ Signature: malware_signature" in RED.
+
+9. JSON INJECTION (json_injection)
+   - Action: (Using PowerShell/CMD)
+     curl -X POST -H "Content-Type: application/json" -d '{"admin": true}' http://<VICTIM_IP>:8000/
+   - Expected: Threat "⚠ Signature: json_injection" in RED.
+
+10. NOSQL INJECTION (nosql_injection)
+    - Action: Visit http://<VICTIM_IP>:8000/?user={"$ne": null}
+    - Expected: Threat "⚠ Signature: nosql_injection" in RED.
+
+11. SUSPICIOUS ENCODING (suspicious_encoding)
+    - Action: Visit http://<VICTIM_IP>:8000/%252e%252e%252f
+    - Expected: Threat "⚠ Signature: suspicious_encoding" in RED.
+
+12. BUFFER OVERFLOW (buffer_overflow)
+    - Action: Send a long string of 'A' characters (50+).
+    - Expected: Threat "⚠ Signature: buffer_overflow" in RED.
+
+--------------------------------------------------------------------------------
+4. HYBRID DETECTION & INTERACTIVE ANALYSIS
+--------------------------------------------------------------------------------
+Prove that the two engines work together for 100% protection.
+
+HYBRID FEEDBACK:
+- If a flood contains attack strings, the UI will list BOTH reasons in 
+  the Threat column (e.g., "SQL Injection; Suspicious Behaviour").
+
+DEEP PACKET INSPECTION (DPI):
+- Single-Click: Select any packet in the table to see its hierarchical 
+  dissection (Wireshark-style) in the middle pane.
+- Double-Click: Open a high-premium, color-coded analysis window specifically 
+  for that packet to inspect MAC addresses, TTL, and Raw Payloads.
+- Payload Analysis: In the analysis window, the IDS will highlight exactly 
+  where the malicious signature was found in the raw data.
+
+--------------------------------------------------------------------------------
+5. BEHAVIORAL & AI ANOMALY TESTS
+--------------------------------------------------------------------------------
+These tests look for "weird patterns" rather than specific strings.
+
+1. PORT SCAN DETECTION:
+   - Action: From Attacker PC, use a tool like Nmap (nmap -sS <VICTIM_IP>) 
+     or rapid connection attempts to multiple different ports.
+   - Expected: Threat "⚠ port scan" in RED.
+
+2. SYN FLOOD DETECTION:
+   - Action: Rapidly send many connection requests to a single port (e.g., 8000).
+   - Expected: Threat "⚠ SYN flood" in RED.
+
+3. AI ANOMALY DETECTION (Traffic Spikes):
+   - Action: Run a script to send thousands of random packets to the Victim.
+   - Expected: Threat "⚠ Suspicious Behaviour" (AI Flagged).
+
+--------------------------------------------------------------------------------
+6. AUTOMATED HYBRID TESTING (BEST FOR DEMOS)
+--------------------------------------------------------------------------------
+The most effective way to test BOTH at once is using the automated script.
+
+ON THE ATTACKER PC (The one doing the attacking):
+1. Copy the `test_hybrid_detection.py` file to this PC.
+2. Install requirements if needed: `pip install requests colorama`
+3. Identify the Victim's IP (e.g., 192.168.1.5).
+4. Run the script targeting the Victim:
+   python test_hybrid_detection.py <VICTIM_IP>
+
+5. Choose Option 1 (Run ALL tests) or Option 5 (Quick Test).
+
+WHY THIS IS "BOTH AT ONCE":
+- The script sends Signature payloads (SQLi, XSS) to test the database.
+- It also performs DoS and Port Scan simulations to test the AI Anomaly model.
+- The 'Hybrid Attack' test specifically sends malicious strings at high volume 
+  to trigger both detection engines simultaneously.
+
+--------------------------------------------------------------------------------
+7. TROUBLESHOOTING (REMOTE EDITION)
+--------------------------------------------------------------------------------
+- ATTACKER CAN'T REACH SERVER? -> Check if the Victim IP is correct and if 
+  the Firewall on the VICTIM PC is blocking Port 8000.
+- NO THREATS DETECTED? -> Ensure the IDS is sniffing the correct INTERFACE 
+  (e.g., select 'Wi-Fi' or 'Ethernet' in the IDS UI dropdown).
+- LOCALHOST VS IP? -> When testing remotely, NEVER use 'localhost' or '127.0.0.1'. 
+  Always use the LAN IP of the target PC.
+
+================================================================================
+                         "SECURE. DETECT. PROTECT."
+================================================================================
