@@ -10,6 +10,8 @@ def show_alert(threats, packet):
 
     # Check for SYN Flood or DDoS
     special_alerts = [threat for threat in threats if threat['attack'] in ['SYN Flood', 'DDoS Attack']]
+    suspicious_alerts = [threat for threat in threats if 'Suspicious' in threat['attack']]
+    
     if special_alerts:
         # Custom message for SYN Flood and DDoS
         threat_text = "⚠️ Potential DDoS/SYN Flood Attack Detected!"
@@ -21,11 +23,23 @@ def show_alert(threats, packet):
         details_label = tk.Label(popup, text="Your system might be under heavy traffic.", 
                                  font=("Arial", 8, "bold"), fg="white", bg="red")
         details_label.pack(expand=True, pady=5)
+    elif suspicious_alerts:
+        # Custom message for Suspicious Behaviour (Anomaly Detection)
+        threat_text = "⚠️ Suspicious Behaviour Detected!"
+        label = tk.Label(popup, text=threat_text, 
+                         font=("Arial", 12, "bold"), fg="black", bg="orange")
+        label.pack(expand=True, pady=10)
+        
+        # Add source info
+        src_info = suspicious_alerts[0].get('src', 'Unknown')
+        details_label = tk.Label(popup, text=f"Source: {src_info}", 
+                                 font=("Arial", 9), fg="black", bg="orange")
+        details_label.pack(expand=True, pady=5)
     else:
-        # Generic message for other attacks
+        # Generic message for signature-based attacks
         threat_text = "\n".join([threat['attack'] for threat in threats])
         label = tk.Label(popup, text=f"⚠️ Threat Detected!\n{threat_text}", 
-                         font=("Arial", 12, "bold"), fg="black", bg="white")
+                         font=("Arial", 12, "bold"), fg="white", bg="red")
         label.pack(expand=True, pady=10)
 
     # Timer Progress Bar
@@ -45,3 +59,5 @@ def show_alert(threats, packet):
     
     # Auto-close after 5 seconds
     popup.after(5000, popup.destroy)
+
+    

@@ -1,0 +1,91 @@
+================================================================================
+          HYBRID INTRUSION DETECTION SYSTEM (IDS) - OFFICIAL TESTING GUIDE
+================================================================================
+Project: Real-time IDS with Signature & AI-based Anomaly Detection
+Environment: Python 3.x with Scapy, Sklearn, and Tkinter
+Author: SARVAN (Final Major Project)
+================================================================================
+
+1. PREPARATION (CRITICAL STEPS)
+--------------------------------------------------------------------------------
+Before starting, ensure you have the following ready:
+- Administrator Privileges are REQUIRED (for packet sniffing).
+- The Virtual Environment (.venv) must be used.
+
+STEP-BY-STEP STARTUP:
+1. Click Start -> Type "PowerShell" -> Right Click "Run as Administrator".
+2. Navigate to your project:
+   cd c:\Users\SARVAN\Desktop\myproject
+3. Activate the Environment:
+   .\.venv\Scripts\Activate.ps1
+4. Launch the IDS UI:
+   python ids_UI.py
+
+--------------------------------------------------------------------------------
+2. SETTING UP THE "VICTIM" SERVER
+--------------------------------------------------------------------------------
+To test attacks, you need a target. Keep the IDS running and open a NEW 
+PowerShell window (Normal Mode is fine).
+1. Run this command to start a web server on Port 8000:
+   python -m http.server 8000
+
+This server will now act as your "Local Organization" that the IDS protects.
+
+--------------------------------------------------------------------------------
+3. TEST 1: SIGNATURE-BASED DETECTION (The "Security Database")
+--------------------------------------------------------------------------------
+This tests the system's ability to catch known hackers strings like SQLi and XSS.
+
+ACTION: 
+Open your browser and enter these URLs:
+- SQL Injection: http://localhost:8000/?id=1' OR '1'='1
+- XSS Attack:    http://localhost:8000/?q=<script>alert('xss')</script>
+
+EXPECTED UI BEHAVIOR:
+- The row in the IDS table will turn SOLID RED.
+- The 'Threat' column will say "⚠ SQL Injection" or "⚠ XSS".
+- The 'Detection Log' at the bottom will post a TIMESTAMPED alert.
+
+--------------------------------------------------------------------------------
+4. TEST 2: ANOMALY-BASED DETECTION (The "AI Brain")
+--------------------------------------------------------------------------------
+This tests the Isolation Forest (AI) model's ability to spot weird traffic 
+patterns like scans or floods.
+
+ACTION:
+In a 3rd PowerShell window, run the Demo Attack script:
+   python demo_attacks.py
+   (Follow the on-screen prompts to trigger the flood/port scan)
+
+EXPECTED UI BEHAVIOR:
+- As traffic increases, the AI will detect a deviation from normal behavior.
+- Rows will turn RED with the label "⚠ Suspicious Behaviour".
+- You can see the AI's "Score" by checking the Detection Log.
+
+--------------------------------------------------------------------------------
+5. TEST 3: HYBRID DETECTION & INTERACTIVE ANALYSIS
+--------------------------------------------------------------------------------
+Prove that the two engines work together for 100% protection.
+
+HYBRID FEEDBACK:
+- If a flood contains attack strings, the UI will list BOTH reasons in 
+  the Threat column (e.g., "SQL Injection; Suspicious Behaviour").
+
+DEEP PACKET INSPECTION (DPI):
+- Single-Click: Select any packet in the table to see its hierarchical 
+  dissection (Wireshark-style) in the middle pane.
+- Double-Click: Open a high-premium, color-coded analysis window specifically 
+  for that packet to inspect MAC addresses, TTL, and Raw Payloads.
+
+--------------------------------------------------------------------------------
+6. TROUBLESHOOTING
+--------------------------------------------------------------------------------
+- NO PACKETS? -> Ensure you selected the correct Interface (WiFi/Ethernet).
+- UI FREEZING? -> Ensure you are not running other heavy apps. The IDS has been 
+  optimized with batch logging to prevent this.
+- ERROR: Permission Denied? -> You forgot to run PowerShell as ADMINISTRATOR.
+- ERROR: Module Missing? -> You forgot to run '.\.venv\Scripts\Activate.ps1'.
+
+================================================================================
+                         "SECURE. DETECT. PROTECT."
+================================================================================

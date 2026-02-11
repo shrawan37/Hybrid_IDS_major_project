@@ -1,31 +1,28 @@
-# Dataset Configuration
 dataset:
-  name: "NSL-KDD"
-  path: "./data/raw/NSL-KDD/"
-  train_file: "KDDTrain+.txt"
-  test_file: "KDDTest+.txt"
-  
-# Feature Engineering
+  name: NSL-KDD
+  path: ./data/raw/NSL-KDD/
+  test_file: KDDTest+.txt
+  train_file: KDDTrain+.txt
 features:
-  categorical: ["protocol_type", "service", "flag"]
-  numerical: ["duration", "src_bytes", "dst_bytes"]
-  target: "label"
-  
-# Model Parameters
+  categorical:
+  - protocol_type
+  - service
+  - flag
+  numerical:
+  - duration
+  - src_bytes
+  - dst_bytes
+  target: label
 model:
   anomaly:
-    type: "IsolationForest"
-    contamination: 0.1
-    n_estimators: 100
+    contamination: 0.5
+    n_estimators: 200
     random_state: 42
-    
-# Signature Rules
+    type: IsolationForest
 signatures:
-  rule_path: "./data/rules/"
-  update_interval: 3600  # 1 hour
-  
-# System Settings
+  rule_path: models/signatures.json
+  update_interval: 3600
 system:
-  realtime: true
-  batch_size: 1000
   alert_threshold: 0.85
+  batch_size: 1000
+  realtime: true

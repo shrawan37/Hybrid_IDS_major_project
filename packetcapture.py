@@ -9,6 +9,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from scapy.all import sniff, conf, IFACES
 from scapy.layers.l2 import Ether, ARP
 from scapy.layers.inet import IP, TCP, UDP, ICMP
+from scapy.layers.inet6 import IPv6
 
 # Import your feature extractor and engines
 from features import FeatureExtractor
@@ -30,7 +31,8 @@ class PacketCapture:
         encoder_path="models/encoder.pkl"
     ):
         # Queue consumed by IDS_UI.update_packet_display()
-        self.packet_queue = Queue()
+        # Limited size to prevent memory leaks during high traffic
+        self.packet_queue = Queue(maxsize=1000)
 
         # Runtime state
         self.running = False
@@ -41,17 +43,38 @@ class PacketCapture:
         # Scapy config
         conf.sniff_promisc = True  # enable promiscuous mode
 
-        # Initialize detection engines
-        self.signature_engine = SignatureEngine()
-        self.anomaly_engine = AnomalyEngine(
-            model_path=model_path,
-            scaler_path=scaler_path,
-            encoder_path=encoder_path
-        )
-        self.hybrid_engine = HybridEngine(self.signature_engine, self.anomaly_engine)
+        # Initialize detection engines with robust error handling
+        try:
+            self.signature_engine = SignatureEngine()
+        except Exception as e:
+            print(f"[WARN] Signature engine failed: {e}")
+            self.signature_engine = None
+            
+        try:
+            self.anomaly_engine = AnomalyEngine(
+                model_path=model_path,
+                scaler_path=scaler_path,
+                encoder_path=encoder_path
+            )
+        except Exception as e:
+            print(f"[WARN] Anomaly engine failed: {e}")
+            self.anomaly_engine = None
+            
+        try:
+            if self.signature_engine and self.anomaly_engine:
+                self.hybrid_engine = HybridEngine(self.signature_engine, self.anomaly_engine)
+            else:
+                self.hybrid_engine = None
+        except Exception as e:
+            print(f"[WARN] Hybrid engine failed: {e}")
+            self.hybrid_engine = None
 
         # Initialize feature extractor
-        self.feature_extractor = FeatureExtractor()
+        try:
+            self.feature_extractor = FeatureExtractor()
+        except Exception as e:
+            print(f"[WARN] Feature extractor failed: {e}")
+            self.feature_extractor = None
 
     def get_available_interfaces(self):
         """Return a list of human-readable interface names for the UI combobox."""
@@ -102,9 +125,10 @@ class PacketCapture:
     def stop(self):
         """Signal the sniffer to stop."""
         self.running = False
-
+        print("[INFO] Stop signal sent to packet capture...")
+        
     def _sniff_loop(self):
-        """Run Scapy sniff with a stop_filter so it can exit when self.running becomes False."""
+        """Run Scapy sniff continuously until stop signal is received."""
         try:
             print(f"[INFO] Starting packet capture on interface: {self.interface}")
             sniff(
@@ -112,8 +136,9 @@ class PacketCapture:
                 prn=self._packet_callback,
                 store=False,
                 promisc=True,
-                stop_filter=lambda pkt: not self.running
+                stop_filter=lambda pkt: not self.running  # Only stop when self.running becomes False
             )
+            print("[INFO] Packet capture stopped.")
         except PermissionError as e:
             print(f"[ERROR] Permission denied: {e}")
             print(f"[ERROR] Make sure you're running as Administrator!")
@@ -134,20 +159,7 @@ class PacketCapture:
         proto = "Other"
         info = ""
 
-        # Ethernet layer
-        if Ether in pkt:
-            src = pkt[Ether].src
-            dst = pkt[Ether].dst
-            proto = "Ether"
-
-        # ARP layer
-        if ARP in pkt:
-            src = pkt[ARP].psrc
-            dst = pkt[ARP].pdst
-            proto = "ARP"
-            info = f"ARP op={pkt[ARP].op} hwsrc={pkt[ARP].hwsrc} hwdst={pkt[ARP].hwdst}"
-
-        # IP layer
+        # Priority 1: IPv4 Layer
         if IP in pkt:
             src = pkt[IP].src
             dst = pkt[IP].dst
@@ -162,41 +174,57 @@ class PacketCapture:
                 proto = "ICMP"
                 info = f"ICMP type={pkt[ICMP].type} code={pkt[ICMP].code}"
 
+        # Priority 2: IPv6 Layer
+        elif IPv6 in pkt:
+            src = pkt[IPv6].src
+            dst = pkt[IPv6].dst
+            proto = "IPv6"
+            if TCP in pkt:
+                proto = "TCP"
+                info = f"TCP {pkt[TCP].sport}->{pkt[TCP].dport} [{pkt[TCP].flags}]"
+            elif UDP in pkt:
+                proto = "UDP"
+                info = f"UDP {pkt[UDP].sport}->{pkt[UDP].dport}"
+
+        # Priority 3: ARP Layer
+        elif ARP in pkt:
+            src = pkt[ARP].psrc
+            dst = pkt[ARP].pdst
+            proto = "ARP"
+            info = f"ARP op={pkt[ARP].op}"
+
+        # Priority 4: Ethernet Layer (Fallback to MAC)
+        elif Ether in pkt:
+            src = pkt[Ether].src
+            dst = pkt[Ether].dst
+            proto = "Ether"
+
         length = len(pkt)
         return src, dst, proto, length, info
 
+
     def _packet_callback(self, packet):
-        """Called by Scapy for each packet. Push to queue for UI and run hybrid detection."""
+        """Called by Scapy for each packet. Push to queue for UI - NO HEAVY PROCESSING HERE!"""
         if not self.running:
             return
 
-        # Parse packet for UI
+        # Parse packet for UI - lightweight operation only
         src, dst, proto, length, info = self._parse_packet(packet)
 
         # Push parsed details into queue (instead of raw packet only)
-        self.packet_queue.put({
-            "packet": packet,
-            "src": src,
-            "dst": dst,
-            "proto": proto,
-            "length": length,
-            "info": info
-        })
-
-        # Extract features for anomaly engine
+        # IMPORTANT: We don't do threat detection here to avoid blocking the sniffer thread
         try:
-            feat_dict = self.feature_extractor.extract_packet_features(packet)
-        except Exception as e:
-            print(f"[WARN] Feature extraction failed: {e}")
-            feat_dict = {}
-
-        # Run hybrid analysis
-        try:
-            result = self.hybrid_engine.analyze(packet, feat_dict)
-            if result.get('malicious'):
-                print(f"[ALERT] Malicious packet detected! Reasons: {result.get('reasons')} | "
-                      f"Score: {result.get('score'):.2f}")
-            else:
-                print(f"[INFO] Normal packet | Score: {result.get('score'):.2f}")
-        except Exception as e:
-            print(f"[ERROR] Hybrid analysis failed: {e}")
+            self.packet_queue.put_nowait({
+                "packet": packet,
+                "src": src,
+                "dst": dst,
+                "proto": proto,
+                "length": length,
+                "info": info
+            })
+        except:
+            # Queue full, drop packet to maintain real-time performance
+            pass
+        
+        # NOTE: Threat detection is now handled by the UI thread's worker
+        # This callback must stay very fast to prevent packet loss

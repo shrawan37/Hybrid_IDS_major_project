@@ -10,24 +10,37 @@ class HybridEngine:
         """
         Returns dict: {'malicious': bool, 'reasons':[], 'score': float}
         """
-        # Signature-based detection
+        # 1. Signature-based detection (First Line of Defense)
+        # As per workflow: If signature matches, classify as threat immediately.
         sig_mal, sig_reason, sig_score = self.sig.check_packet(pkt)
 
-        # Anomaly-based detection
-        anom_result = self.anom.analyze(feat)
-        anom_mal = anom_result["malicious"]
-        anom_score = anom_result["score"]
-
-        # Combine scores
-        combined_score = self.w_sig * sig_score + self.w_anom * anom_score
-        malicious = sig_mal or (combined_score >= self.threshold)
-
-        # Reasoning
-        reasons = []
         if sig_mal:
-            reasons.append(sig_reason or "signature")
+            return {
+                'malicious': True,
+                'reasons': [sig_reason or "Used Known Signature"],
+                'score': 1.0  # Max certainty
+            }
+
+        # 2. Anomaly-based detection (Second Line of Defense)
+        # Skip anomaly detection for whitelisted IPs or IPv6 to reduce noise and CPU load
+        # (Current model is optimized for IPv4 NSL-KDD patterns)
+        src_ip = feat.get("src_ip", "")
+        if ":" in src_ip or self.sig.is_whitelisted(src_ip):
+            return {'malicious': False, 'reasons': [], 'score': 0.0}
+            
+        # Only run if signature check failed (optimization)
+        anom_result = self.anom.analyze(feat)
+        anom_mal = anom_result.get("malicious", False)
+        anom_score = anom_result.get("score", 0.0)
+
+        # Combine scores (dominated by anomaly score since signature was roughly 0)
+        # Using a safer combination logic
+        combined_score = anom_score 
+        malicious = anom_mal
+
+        reasons = []
         if anom_mal:
-            reasons.append("anomaly")
+            reasons.append("Suspicious Behaviour")
 
         return {
             'malicious': malicious,

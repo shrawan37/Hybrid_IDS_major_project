@@ -1,52 +1,62 @@
 {
-  "sql_injection": {
-    "pattern": "(?i)('.*OR|UNION.*SELECT|DROP|DELETE.*FROM|INSERT.*INTO|exec.*sp_|xp_cmdshell|';)",
-    "severity": 0.95,
-    "description": "SQL Injection attempt detected"
-  },
-  "xss": {
-    "pattern": "(?i)(<script|javascript:|onerror|onclick|alert\\(|<img|<iframe)",
+  "xss_payload": {
+    "pattern": "(<script[^>]*>.*?</script>|javascript\\s*:\\s*alert\\(|on(?:error|click|load|mouseover)\\s*=\\s*['\\\"]alert|\\<img\\s+src=['\\\"]x['\\\"]\\s+onerror=|\\<svg\\s+onload=)",
     "severity": 0.90,
-    "description": "Cross-Site Scripting (XSS) attack detected"
+    "description": "XSS - Specific script execution patterns"
   },
-  "ddos": {
-    "pattern": "(?i)(flood|dos|slowloris)",
+  "command_injection": {
+    "pattern": "(;\\s*/bin/sh|;\\s*/bin/bash|;\\s*cmd\\.exe|\\|\\|\\s*wget\\s+http|\\|\\|\\s*curl\\s+http|`cat\\s+/etc/passwd`|\\$\\((?:whoami|id|uname\\s-a)\\))",
+    "severity": 0.90,
+    "description": "Command Injection - Specific shell command chaining"
+  },
+  "xxe_injection": {
+    "pattern": "(<!ENTITY\\s+xxe\\s+SYSTEM|<!DOCTYPE\\s+root\\s+\\[<!ENTITY)",
     "severity": 0.85,
-    "description": "Potential DDoS/flooding attack detected"
+    "description": "XXE Injection - Specific XML Entity attacks"
   },
-  "port_scan": {
-    "pattern": "(?i)(nmap|masscan|zmap|portscan)",
+  "ldap_injection": {
+    "pattern": "(\\)\\s*\\(&\\s*\\(|\\)\\s*\\(\\|\\s*\\(|\\)\\s*\\(!\\s*\\(|\\*\\)\\s*\\(|uid=\\*\\)|cn=\\*\\))",
     "severity": 0.80,
-    "description": "Port scanning activity detected"
+    "description": "LDAP Injection - Filter manipulation with known injection structures"
   },
-  "arp_spoofing": {
-    "pattern": "(?i)(arp.*spoof|gratuitous|duplicate.*ip)",
-    "severity": 0.85,
-    "description": "ARP spoofing or manipulation detected"
+  "web_shell": {
+    "pattern": "(eval\\(\\$_POST\\[|system\\(\\$_GET\\[|shell_exec\\(\\$_POST\\[|passthru\\(\\$_REQUEST\\[)",
+    "severity": 0.95,
+    "description": "Web Shell - PHP execution via input parameters"
   },
-  "dns_tunneling": {
-    "pattern": "(?i)(dns.*tunnel|dns-over|doh)",
-    "severity": 0.70,
-    "description": "DNS tunneling detected"
-  },
-  "smb_exploit": {
-    "pattern": "(?i)(eternalblue|smbghost|wannacry)",
+  "malware_signature": {
+    "pattern": "(powershell\\s+-nop\\s+-w\\s+hidden|powershell\\.exe\\s+-enc|cmd\\.exe\\s+/c\\s+powershell|certutil\\s+-urlcache\\s+-split)",
     "severity": 0.90,
-    "description": "SMB exploitation attempt detected"
+    "description": "Malware - Specific malicious command line arguments"
   },
-  "ftp_brute_force": {
-    "pattern": "(?i)(ftp.*auth|ftp.*fail)",
-    "severity": 0.75,
-    "description": "FTP brute force attempt detected"
+  "json_injection": {
+    "pattern": "(\"admin\"\\s*:\\s*true,\"|\\\"username\\\"\\s*:\\s*\\{\\s*\\\"\\$ne\\\"\\s*:\\s*null\\})",
+    "severity": 0.80,
+    "description": "JSON Injection - Authentication bypass structure"
   },
-  "ssh_attack": {
-    "pattern": "(?i)(ssh.*fail|invalid.*user)",
+  "nosql_injection": {
+    "pattern": "(\\{\\s*\\$ne\\s*:\\s*null\\}|\\{\\s*\\$gt\\s*:\\s*\\\"\\\"\\}|\\{\\s*\\$where\\s*:\\s*\\\"sleep)",
     "severity": 0.85,
-    "description": "SSH attack detected"
+    "description": "NoSQL Injection - Known bypass patterns"
   },
-  "email_phishing": {
-    "pattern": "(?i)(verify|urgent action|click here)",
+  "path_traversal": {
+    "pattern": "(\\.\\./\\.\\./\\.\\./|\\.\\.\\\\\\.\\.\\\\\\.\\.\\\\|/etc/shadow|/etc/passwd|c:\\\\windows\\\\system32\\\\cmd\\.exe)",
+    "severity": 0.85,
+    "description": "Path Traversal - Deep traversal or critical system files"
+  },
+  "suspicious_encoding": {
+    "pattern": "(%252e%252e%252f|%2e%2e%2f%2e%2e%2f|%3cscript%3e)",
     "severity": 0.75,
-    "description": "Phishing attempt detected"
+    "description": "URL Encoding - Double encoded traversal or scripts"
+  },
+  "buffer_overflow": {
+    "pattern": "(\\x90{50,}|\\x41{100,})",
+    "severity": 0.95,
+    "description": "Buffer Overflow - NOP sleds or specific hex patterns"
+  },
+  "sql_injection": {
+    "pattern": "('(?:\\s+OR\\s+'1'='1|\\s+OR\\s+1=1)|(?:\\s+UNION\\s+SELECT\\s+)|(?:\\s+WAITFOR\\s+DELAY\\s+)|admin'--|';\\s*DROP\\s+TABLE|';\\s*EXEC\\s+xp_)",
+    "severity": 0.95,
+    "description": "SQL Injection - Specific boolean-based or time-based payloads"
   }
 }

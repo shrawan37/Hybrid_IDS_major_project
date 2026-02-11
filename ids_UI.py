@@ -1,12 +1,22 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 import tkinter as tk
 from tkinter import ttk, messagebox
 from packetcapture import PacketCapture
 from packet_info import show_packet_info
 from datetime import datetime
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS
+from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, Raw
+import scapy.packet
 import threading
 import time
 import requests
+import ipaddress
+from collections import deque
+from active_response import ActiveResponse
+from notifications import NotificationSystem
+from reporting import ReportGenerator
+# from traffic_logger import TrafficLogger (Disabled as requested)
+
 
 class IDS_UI:
     def __init__(self, root):
@@ -15,14 +25,33 @@ class IDS_UI:
         self.root.geometry("1400x900")
         self.root.configure(bg="#0f0f1e")
         
-        # Packet capture instance
-        self.capture = PacketCapture()
+        # Whitelist trusted/internal networks to reduce false positives
+        self.whitelist_ranges = [
+              # Private network
+            # Private network (Home/Office)
+            "10.0.0.0/8",        # Private network (Enterprise)
+            "172.16.0.0/12",     # Private network
+             "172.16.9.21/24", #private network
+            "140.82.112.0/24",   # GitHub
+            "140.82.113.0/24",   # GitHub
+            "13.64.0.0/11",      # Azure
+            "13.96.0.0/13",      # Azure
+            "13.104.0.0/14",     # Azure
+            "40.64.0.0/10",      # Azure
+            "40.128.0.0/9",      # Azure
+            "52.160.0.0/11",     # Azure
+            "20.0.0.0/8",        # Azure
+        ]
+        
+        # Packet capture instance - delay initialization to prevent freeze
+        self.capture = None
         self.capturing = False
         
-        # Store packets
-        self.packets_list = []
-        self.raw_packets = []
-        self.display_limit = 100
+        # Store packets - Using deque with maxlen to prevent memory leaks
+        self.display_limit = 1000 # Optimized for better Treeview performance
+        self.packets_list = deque(maxlen=self.display_limit)
+        self.raw_packets = deque(maxlen=self.display_limit)
+        self.tree_item_ids = deque() # Track IDs for O(1) cleanup
         
         # Protocol statistics
         self.protocol_counts = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'ARP': 0, 'Other': 0}
@@ -33,8 +62,51 @@ class IDS_UI:
         self.last_alert_time = 0
         self.alert_cooldown = 2
         
+        # Worker thread for threat detection
+        self.threat_queue = deque(maxlen=5000) # Use deque for O(1) pop(0)
+        self.threat_detection_thread = None
+        self.stop_threat_worker = False
+        
+        # Batch display updates
+        self.pending_display_updates = []
+        self.pending_threat_updates = deque(maxlen=3000) # Use deque for O(1) popleft, capped at 30x display limit
+        self.ui_update_lock = threading.Lock()
+        self.pkt_to_item = {} # Map packet number to treeview item_id for O(1) lookup
+        self.displayed_count = 0 # Track items in treeview without calling get_children()
+        
+        # Log Batching
+        self.log_queue = deque()
+        self.root.after(100, self._process_log_queue)
+        
+        # New Modules
+        self.active_response = ActiveResponse()
+        # NOTE: Email config should ideally be from a settings file. Using placeholders.
+        self.notifications = NotificationSystem(
+            sender_email="alerts@yourdomain.com", 
+            sender_password="yourpassword", 
+            admin_email="admin@yourdomain.com"
+        )
+        self.reporter = ReportGenerator()
+        # self.traffic_logger = TrafficLogger() (Disabled as requested)
+        self.auto_block_var = tk.BooleanVar(value=False)
+        
         # Create UI
+
         self.create_widgets()
+        
+        # Initialize packet capture after UI is loaded
+        self.root.after(1000, self._init_packet_capture)
+        
+        # Start threat detection worker thread
+        from alert_popup import show_alert
+        self.show_alert_func = show_alert
+        self.start_threat_detection_worker()
+
+        # Auto-start if requested (for testing)
+        import os
+        if os.environ.get("IDS_AUTO_START") == "1":
+            self.root.after(3000, self.start_capture)
+
         
     def create_widgets(self):
         """Create simplified UI with better layout"""
@@ -61,23 +133,14 @@ class IDS_UI:
         tk.Label(control_row1, text="📡 Select Interface:", bg="#1a1a2e", fg="white", 
                 font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(0, 10))
         
-        # Get interfaces
-        try:
-            interfaces = self.capture.get_available_interfaces()
-        except Exception as e:
-            interfaces = []
-            messagebox.showerror("Error", f"Failed to get interfaces: {e}")
-        
-        if not interfaces:
-            interfaces = ["No interfaces found"]
-        
-        self.interface_var = tk.StringVar(value=interfaces[0] if interfaces else "")
+        # Get interfaces - will be populated after capture is initialized
+        self.interface_var = tk.StringVar(value="Loading interfaces...")
         
         # Interface dropdown - SIMPLIFIED
         self.interface_combo = ttk.Combobox(
             control_row1,
             textvariable=self.interface_var,
-            values=interfaces,
+            values=["Loading interfaces..."],
             state="readonly",
             width=40,
             font=("Arial", 10)
@@ -125,6 +188,24 @@ class IDS_UI:
         )
         clear_btn.pack(side=tk.LEFT, padx=5)
         
+        # New Controls
+        tk.Checkbutton(control_row2, text="Auto-Block IPs", variable=self.auto_block_var, 
+                      bg="#1a1a2e", fg="white", selectcolor="#1a1a2e", activebackground="#1a1a2e", activeforeground="white"
+                      ).pack(side=tk.LEFT, padx=10)
+        
+        report_btn = tk.Button(
+            control_row2,
+            text="📄 REPORT",
+            command=self.generate_report,
+            bg="#9b59b6",
+            fg="white",
+            font=("Arial", 10),
+            width=10,
+            cursor="hand2"
+        )
+        report_btn.pack(side=tk.LEFT, padx=5)
+
+        
         tk.Label(control_row2, text="", bg="#1a1a2e").pack(side=tk.LEFT, expand=True)
         
         # Status label
@@ -151,9 +232,13 @@ class IDS_UI:
         )
         self.stats_label.pack(pady=8)
         
-        # ===== MAIN CONTENT: Packet Table =====
-        table_frame = tk.Frame(self.root, bg="#2d3436")
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # ===== MAIN CONTENT: Paned Window for List and Details =====
+        self.main_pane = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        self.main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # --- Top Pane: Packet Table ---
+        table_frame = tk.Frame(self.main_pane, bg="#2d3436")
+        self.main_pane.add(table_frame, weight=6)
         
         # Title
         tk.Label(
@@ -165,7 +250,7 @@ class IDS_UI:
         ).pack(anchor=tk.W, padx=10, pady=(5, 0))
         
         # Treeview for packets
-        columns = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Threat")
+        columns = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Details", "Threat")
         
         style = ttk.Style()
         style.configure("Treeview", background="#1e272e", foreground="white", 
@@ -179,10 +264,10 @@ class IDS_UI:
         self.packet_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15, style="Treeview")
         
         # Configure columns
-        col_widths = {"No.": 40, "Time": 100, "Source": 150, "Destination": 150, "Protocol": 70, "Length": 70, "Threat": 150}
+        col_widths = {"No.": 40, "Time": 100, "Source": 120, "Destination": 120, "Protocol": 60, "Length": 60, "Details": 250, "Threat": 250}
         for col, width in col_widths.items():
             self.packet_tree.heading(col, text=col)
-            self.packet_tree.column(col, width=width, anchor="w" if col != "Length" else "center")
+            self.packet_tree.column(col, width=width, anchor="w" if col != "Length" and col != "No." else "center")
         
         # Scrollbars
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.packet_tree.yview)
@@ -197,10 +282,33 @@ class IDS_UI:
         tree_frame.grid_columnconfigure(0, weight=1)
         
         # Bind events
+        self.packet_tree.bind("<<TreeviewSelect>>", self.on_packet_selected)
         self.packet_tree.bind("<Double-1>", self.show_packet_details)
         
+        # --- Bottom Pane: Hierarchical Details ---
+        details_frame = tk.Frame(self.main_pane, bg="#2d3436")
+        self.main_pane.add(details_frame, weight=1)
+        
+        tk.Label(
+            details_frame,
+            text="🔍 Packet Dissection ",
+            bg="#2d3436",
+            fg="#00ff9d",
+            font=("Arial", 11, "bold")
+        ).pack(anchor=tk.W, padx=10, pady=(5, 0))
+        
+        details_tree_frame = tk.Frame(details_frame, bg="#1e272e")
+        details_tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.details_tree = ttk.Treeview(details_tree_frame, show="tree", style="Treeview")
+        self.details_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        d_v_scroll = ttk.Scrollbar(details_tree_frame, orient="vertical", command=self.details_tree.yview)
+        d_v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.details_tree.configure(yscrollcommand=d_v_scroll.set)
+        
         # ===== BOTTOM: Detection LOG =====
-        log_frame = tk.Frame(self.root, bg="#1a1a2e", height=150)
+        log_frame = tk.Frame(self.root, bg="#1a1a2e", height=220)
         log_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
         log_frame.pack_propagate(False)
         
@@ -210,7 +318,7 @@ class IDS_UI:
         log_text_frame = tk.Frame(log_frame, bg="#0d1117")
         log_text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.log_text = tk.Text(log_text_frame, height=7, bg="#0d1117", fg="#8b949e",
+        self.log_text = tk.Text(log_text_frame, height=10, bg="#0d1117", fg="#8b949e",
                                font=("Consolas", 9), wrap=tk.WORD, relief=tk.FLAT)
         log_scroll = tk.Scrollbar(log_text_frame, command=self.log_text.yview)
         self.log_text.config(yscrollcommand=log_scroll.set)
@@ -218,15 +326,94 @@ class IDS_UI:
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
+        # Configure tags ONCE to avoid UI lag
+        self.packet_tree.tag_configure("threat", background="#ff3333", foreground="white")
+        
+        # Protocols coloring tags
+        self.protocol_colors = {
+            "TCP": {"bg": "#0d2f4d", "fg": "#00d4ff"},
+            "UDP": {"bg": "#3d0d4d", "fg": "#ff00ff"},
+            "ICMP": {"bg": "#0d4d1f", "fg": "#00ff00"},
+            "ARP": {"bg": "#4d3d0d", "fg": "#ffaa00"},
+            "DNS": {"bg": "#4d4d0d", "fg": "#ffff00"},
+            "HTTP": {"bg": "#1a2a3a", "fg": "#66ccff"},
+            "HTTPS": {"bg": "#1a3a2a", "fg": "#66ff99"},
+            "SSH": {"bg": "#2a1a3a", "fg": "#cc66ff"},
+            "HTTP": {"bg": "#1a2a3a", "fg": "#66ccff"},
+            "HTTPS": {"bg": "#1a3a2a", "fg": "#66ff99"},
+            "SSH": {"bg": "#2a1a3a", "fg": "#cc66ff"},
+            "FTP": {"bg": "#3a2a1a", "fg": "#ffcc66"},
+            "SMTP": {"bg": "#3a1a2a", "fg": "#ff6666"},
+            "Other": {"bg": "#2a2a2a", "fg": "#cccccc"}
+        }
+        for proto, colors in self.protocol_colors.items():
+            self.packet_tree.tag_configure(proto, foreground=colors["fg"], background=colors["bg"])
+
+        # Pre-configure log tags to avoid UI lag
+        self.log_colors = {
+            "info": "#8b949e",
+            "error": "#ff6b6b",
+            "warning": "#ffcc00",
+            "success": "#00ff9d",
+            "threat": "#ff4757"
+        }
+        for msg_type, color in self.log_colors.items():
+            self.log_text.tag_config(msg_type, foreground=color)
+
         # Initial log
-        self.add_log("✅ System initialized. Select interface and click START")
-        self.add_log(f"✅ Found {len(interfaces)} network interface(s)")
+        self.add_log("✅ System initialized. Loading network interfaces...")
         
         # Start update loop
         self.update_packet_display()
+    
+    def _init_packet_capture(self):
+        """Initialize packet capture in a background thread to prevent UI freeze during model loading."""
+        self.add_log("⏳ Loading detection engines and models... Please wait.")
+        self.interface_var.set("Loading engines...")
+        self.status_label.config(text="Status: Loading engines...", fg="orange")
+        self.start_btn.config(state=tk.DISABLED) # Disable until ready
+        
+        def _bg_init():
+            try:
+                # This call loads ML models which can be slow
+                cap = PacketCapture()
+                
+                # Now get available interfaces
+                interfaces = cap.get_available_interfaces()
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self._finish_init(cap, interfaces))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.add_log(f"⚠️ Packet capture init error: {str(e)}", "error"))
+                self.root.after(0, lambda: self.interface_var.set("Error loading engines"))
+                self.root.after(0, lambda: self.status_label.config(text="Status: Error loading engines", fg="red"))
+
+        threading.Thread(target=_bg_init, daemon=True).start()
+
+    def _finish_init(self, cap, interfaces):
+        """Called on main thread after background initialization is complete."""
+        self.capture = cap
+        self.add_log("✅ Packet capture and ML engines ready")
+        
+        if interfaces:
+            self.interface_combo.config(values=interfaces, state="readonly")
+            self.interface_var.set(interfaces[0])
+            self.add_log(f"✅ Found {len(interfaces)} network interface(s)")
+            self.status_label.config(text="Status: Ready", fg="#ffcc00")
+            self.start_btn.config(state=tk.NORMAL) # Re-enable button
+        else:
+            self.interface_combo.config(values=["No interfaces found"])
+            self.interface_var.set("No interfaces found")
+            self.add_log("⚠️ No network interfaces detected", "error")
+            self.status_label.config(text="Status: No interfaces found", fg="red")
         
     def start_capture(self):
         """Start packet capture"""
+        if self.capture is None:
+            self.add_log("❌ ERROR: Packet capture not initialized", "error")
+            return
+            
         if not self.interface_var.get() or self.interface_var.get() == "No interfaces found":
             self.add_log("❌ ERROR: Please select a valid network interface", "error")
             return
@@ -252,72 +439,71 @@ class IDS_UI:
     def stop_capture(self):
         """Stop packet capture"""
         try:
+            self.add_log("⏹ Stopping capture...", "info")
             self.capture.stop()
             self.capturing = False
             
-            # Update UI state
+            # Non-blocking delay to let the sniffer thread finish
+            self.root.after(500, self._finalize_stop)
+            
+        except Exception as e:
+            self.add_log(f"❌ ERROR stopping capture: {str(e)}", "error")
+
+    def _finalize_stop(self):
+        """Update UI state after capture has fully stopped"""
+        try:
             self.start_btn.config(state=tk.NORMAL, bg="#00b894")
             self.stop_btn.config(state=tk.DISABLED, bg="#e74c3c")
             self.interface_combo.config(state="readonly")
             
-            packet_count = len(self.packets_list)
+            # Use displayed_count instead of get_children() for speed
+            packet_count = self.displayed_count
             self.status_label.config(text=f"Status: Stopped | Total Packets: {packet_count}", fg="#ffcc00")
             
-            self.add_log(f"⏹ Capture STOPPED. Total packets captured: {packet_count}")
+            self.add_log(f"✅ Capture STOPPED. Total packets captured: {packet_count}")
+        except Exception:
+            pass
             
-        except Exception as e:
-            self.add_log(f"❌ ERROR stopping capture: {str(e)}", "error")
-            
-    def clear_packets(self):
-        """Clear all packets from display"""
-        # Clear treeview
-        for item in self.packet_tree.get_children():
-            self.packet_tree.delete(item)
-        
-        # Clear stored packets
-        self.packets_list.clear()
-        self.raw_packets.clear()
-        self.total_packet_count = 0  # Reset counter
-        self.protocol_counts = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'ARP': 0, 'Other': 0}
-        self.threat_count = 0
-        self.add_log("✅ Packet list cleared")
-        
-        # Reset counters
-        self.protocol_counts = {k: 0 for k in self.protocol_counts}
-        self.threat_count = 0
-        
-        # Update UI
-        self.update_statistics()
-        self.add_log("🧹 All packets cleared from display.")
         
     def add_log(self, message, msg_type="info"):
-        """Add message to detection log with color coding"""
+        """Append message to log queue (Thread-safe for deques)"""
         timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_queue.append((timestamp, message, msg_type))
+
+    def _process_log_queue(self):
+        """Process log messages in batches to prevent UI freeze"""
+        if self.log_queue:
+            try:
+                # Process larger batches but less often
+                batch_limit = 50
+                at_bottom = self.log_text.yview()[1] > 0.8
+                
+                for _ in range(batch_limit):
+                    if not self.log_queue: break
+                    ts, msg, mtype = self.log_queue.popleft()
+                    
+                    self.log_text.insert(tk.END, f"[{ts}] {msg}\n")
+                    curr_line = self.log_text.index("end-1c linestart")
+                    self.log_text.tag_add(mtype, curr_line, "end-1c")
+                    
+                    # Periodic trimming
+                    if self.displayed_count % 100 == 0:
+                        count = int(self.log_text.index('end-1c').split('.')[0])
+                        if count > 1000:
+                            self.log_text.delete('1.0', '50.0')
+
+                if at_bottom:
+                    self.log_text.see(tk.END)
+            except:
+                pass
         
-        # Color coding based on message type
-        colors = {
-            "info": "#8b949e",
-            "error": "#ff6b6b",
-            "warning": "#ffcc00",
-            "success": "#00ff9d",
-            "threat": "#ff4757"
-        }
-        
-        color = colors.get(msg_type, "#8b949e")
-        
-        # Insert with color tag
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        
-        # Apply color to the new line
-        start_index = f"{self.log_text.index(tk.END).split('.')[0]}.0"
-        self.log_text.tag_add(msg_type, f"{float(start_index)-1.0}", start_index)
-        self.log_text.tag_config(msg_type, foreground=color)
-        
-        # Auto-scroll to bottom
-        self.log_text.see(tk.END)
+        # Check every 100ms
+        self.root.after(100, self._process_log_queue)
+
+
 
     def show_threat_alert(self, source_ip, threat_reason, dest_ip):
-        """Show a pop-up alert when threat is detected (non-blocking)"""
+        """Show a non-blocking threat notification"""
         # Debounce alerts - don't show too many in quick succession
         current_time = time.time()
         if current_time - self.last_alert_time < self.alert_cooldown:
@@ -325,221 +511,335 @@ class IDS_UI:
         
         self.last_alert_time = current_time
         
-        # Show alert in a separate thread so it doesn't block the UI
-        def show_alert():
-            alert_message = f"""🚨 THREAT DETECTED! 🚨
-
-Attack Type: {threat_reason}
-Source IP:  {source_ip}
-Target IP:  {dest_ip}
-Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-⚠️ Take action if this is suspicious!"""
-            
-            try:
-                messagebox.showwarning("🚨 THREAT ALERT 🚨", alert_message)
-            except Exception as e:
-                print(f"Alert error: {e}")
+        # Log threat with timestamp
+        threat_msg = f"🚨 THREAT DETECTED: {threat_reason} | Source: {source_ip} | Target: {dest_ip}"
+        self.root.after(0, lambda: self.add_log(threat_msg, "threat"))
         
-        # Run in separate thread to avoid blocking
-        alert_thread = threading.Thread(target=show_alert, daemon=True)
-        alert_thread.start()
+        # DISABLED: Blocking popups cause UI freeze during high traffic
+        # alert_text = f"🚨 THREAT ALERT 🚨\n\nThreat: {threat_reason}\nSource: {source_ip}\nTarget: {dest_ip}"
+        # self.root.after(0, lambda: messagebox.showwarning("🚨 THREAT ALERT 🚨", alert_text))
+
+    def start_threat_detection_worker(self):
+        """Start a background worker thread for threat detection to avoid blocking the UI."""
+        self.stop_threat_worker = False
+        self.threat_detection_thread = threading.Thread(target=self._threat_detection_worker, daemon=True)
+        self.threat_detection_thread.start()
+    
+    def _threat_detection_worker(self):
+        """Background worker that processes threat detection without blocking the UI."""
+        recent_threats = {}  # Track recent threats to reduce false positive alerts
+        threat_cooldown = 10  # Increased cooldown to 10s to reduce alert spam
+        
+        while not self.stop_threat_worker:
+            try:
+                # Process threats in small batches to balance CPU and responsiveness
+                processed = 0
+                max_batch = 10
+                
+                while processed < max_batch:
+                    try:
+                        item = self.threat_queue.popleft()
+                    except IndexError:
+                        break # Queue empty
+                        
+                    packet = item.get("packet")
+                    src = item.get("src")
+                    dst = item.get("dst")
+                    pkt_num = item.get("pkt_num")
+                    
+                    try:
+                        # Extract features and analyze
+                        if self.capture and self.capture.feature_extractor:
+                            feat_dict = self.capture.feature_extractor.extract_packet_features(packet)
+                            if self.capture.hybrid_engine:
+                                result = self.capture.hybrid_engine.analyze(packet, feat_dict)
+                                if result.get("malicious"):
+                                    reasons = result.get("reasons", [])
+                                    threat_text = ", ".join(reasons)
+                                    alert_src = src
+                                    if IP in packet: alert_src = packet[IP].src
+                                    elif IPv6 in packet: alert_src = packet[IPv6].src
+
+                                    threat = f"⚠ {threat_text}"
+                                    if "Suspicious" in threat_text:
+                                        threat = "⚠ Suspicious Behaviour"
+
+                                    with self.ui_update_lock:
+                                        # Queue for UI row coloring
+                                        self.pending_threat_updates.append((pkt_num, threat))
+                                        
+                                        # DEBOUNCE the Logs and Popups to prevent UI freezing during floods
+                                        threat_key = f"{alert_src}:{threat_text[:20]}"
+                                        now = time.time()
+                                        if threat_key not in recent_threats or (now - recent_threats[threat_key] > threat_cooldown):
+                                            recent_threats[threat_key] = now
+                                            self.threat_count += 1
+                                            
+                                            # Directly append to log queue (thread-safe)
+                                            self.add_log(f"🚨 THREAT: {threat_text} from {alert_src}", "threat")
+                                            
+                                            # Show Popup - throttle popups significantly
+                                            if ("Signature" in threat_text or "Injection" in threat_text) and len(tk._default_root.winfo_children()) < 10:
+                                                threat_data = [{"attack": threat_text, "src": alert_src, "dst": dst}]
+                                                self.root.after(0, lambda d=threat_data, p=packet: self.show_alert_func(d, p))
+
+                        processed += 1
+                    except Exception as e:
+                        processed += 1
+                
+                # Manual cleanup removed - maxlen handled by deque
+                
+                if processed == 0:
+                    time.sleep(0.2) # Idle longer when no work
+                else:
+                    time.sleep(0.02) # Yield to other threads
+            except Exception:
+                time.sleep(0.1)
+
+
+    def _update_threat_display(self, pkt_num, threat):
+        """Update treeview with threat info (called from main thread via after)"""
+        try:
+            item_id = self.pkt_to_item.get(pkt_num)
+            if item_id and self.packet_tree.exists(item_id):
+                # Update threat column (index 7)
+                self.packet_tree.set(item_id, "Threat", threat)
+                # Red background for threat - tag is already configured
+                self.packet_tree.item(item_id, tags=("threat",))
+        except Exception as e:
+            pass
 
     def update_packet_display(self):
         """Periodically update the packet display by consuming from packet_queue"""
+        # Check if capture stopped unexpectedly
+        if self.capturing and self.capture and not self.capture.running:
+            self.add_log("⚠️ WARNING: Packet capture stopped unexpectedly!", "warning")
+            self.capturing = False
+            self.start_btn.config(state=tk.NORMAL, bg="#00b894")
+            self.stop_btn.config(state=tk.DISABLED, bg="#e74c3c")
+            self.interface_combo.config(state="readonly")
+            return
+        
         if self.capturing and self.capture.running:
             packets_processed = 0
+            batch_items = []
             
-            # Process all available packets in the queue
-            while not self.capture.packet_queue.empty():
+            # Process available packets from queue (limit batch size to prevent lag)
+            batch_limit = 100  # Larger batch to process queue faster
+            
+            while not self.capture.packet_queue.empty() and packets_processed < batch_limit:
                 try:
-                    pkt_info = self.capture.packet_queue.get()
+                    pkt_info = self.capture.packet_queue.get_nowait()
                     
-                    # Extract parsed fields from dict (as provided by _parse_packet in packetcapture.py)
+                    # Extract parsed fields
                     src = pkt_info.get("src", "Unknown")
                     dst = pkt_info.get("dst", "Unknown")
                     proto = pkt_info.get("proto", "Other")
                     length = pkt_info.get("length", 0)
-                    info = pkt_info.get("info", "")
+                    info = pkt_info.get("info", "") 
                     packet = pkt_info.get("packet")
                     
                     # Store raw packet for details view
                     self.raw_packets.append(packet)
                     
-                    # Parse additional info for display (similar to your original parse_packet)
-                    parsed_info = self.parse_packet_for_display(packet)
-                    
                     # Update protocol statistics
-                    display_proto = parsed_info["protocol"]
-                    if display_proto in self.protocol_counts:
-                        self.protocol_counts[display_proto] += 1
-                    else:
-                        self.protocol_counts["Other"] += 1
+                    with self.ui_update_lock:
+                        if proto in self.protocol_counts:
+                            self.protocol_counts[proto] += 1
+                        else:
+                            self.protocol_counts["Other"] += 1
+                        self.total_packet_count += 1
                     
-                    # Threat detection using hybrid engine
-                    threat = ""
-                    try:
-                        # Extract features for anomaly engine
-                        feat_dict = self.capture.feature_extractor.extract_packet_features(packet)
-                        # Run hybrid analysis
-                        result = self.capture.hybrid_engine.analyze(packet, feat_dict)
-                        if result.get("malicious"):
-                            threat = "⚠ " + ", ".join(result.get("reasons", []))
-                            self.threat_count += 1
-                            # Log the threat
-                            self.add_log(f"🚨 THREAT DETECTED: {threat} from {src}", "threat")
-                            # Show alert pop-up
-                            self.show_threat_alert(src, threat, dst)
-                    except Exception as e:
-                        # Fallback to basic threat detection
-                        threat = self.basic_threat_detection(packet)
-                        if threat:
-                            self.threat_count += 1
-                            self.add_log(f"🚨 BASIC THREAT: {threat} from {src}", "threat")
-                            # Show alert pop-up
-                            self.show_threat_alert(src, threat, dst)
+                    # Queue packet for threat detection
+                    self.threat_queue.append({
+                        "packet": packet,
+                        "src": src,
+                        "dst": dst,
+                        "pkt_num": self.total_packet_count
+                    })
                     
-                    # Increment global packet counter
-                    self.total_packet_count += 1
+                    # Store display info to batch insert
+                    batch_items.append({
+                        "num": self.total_packet_count,
+                        "time": datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                        "src": src,
+                        "dst": dst,
+                        "proto": proto,
+                        "length": length,
+                        "info": info
+                    })
                     
-                    # Keep only last N packets
-                    if len(self.raw_packets) > self.display_limit:
-                        self.raw_packets.pop(0)
-                        # Remove from Treeview
-                        if self.packet_tree.get_children():
-                            self.packet_tree.delete(self.packet_tree.get_children()[0])
+                    packets_processed += 1
                     
-                    # Insert into Treeview (7 columns: No., Time, Source, Destination, Protocol, Length, Threat)
+                except Exception:
+                    break
+            
+            # Batch insert all items into Treeview
+            for item in batch_items:
+                try:
+                    proto = item["proto"]
+                    tag = proto if proto in self.protocol_colors else "Other"
+                    
                     item_id = self.packet_tree.insert(
                         "",
                         tk.END,
                         values=(
-                            self.total_packet_count,
-                            datetime.now().strftime("%H:%M:%S.%f")[:-3],
-                            src,
-                            dst,
-                            display_proto,
-                            length,
-                            threat
-                        )
+                            item["num"],
+                            item["time"],
+                            item["src"],
+                            item["dst"],
+                            item["proto"],
+                            item["length"],
+                            item["info"],
+                            ""  # Threat placeholder
+                        ),
+                        tags=(tag,) # Crucial: Pass tags during insertion!
                     )
                     
-                    # Color code threats
-                    if threat:
-                        self.packet_tree.item(item_id, tags=("threat",))
-                        self.packet_tree.tag_configure("threat", background="#2d0000", foreground="#ff6b6b")
-                    
-                    # Color code protocols
-                    protocol_color_map = {
-                        "TCP": "#3498db",
-                        "UDP": "#9b59b6",
-                        "ICMP": "#2ecc71",
-                        "ARP": "#e67e22",
-                        "DNS": "#f1c40f"
-                    }
-                    
-                    if display_proto in protocol_color_map:
-                        if not self.packet_tree.item(item_id, "tags"):
-                            self.packet_tree.item(item_id, tags=(display_proto,))
-                        self.packet_tree.tag_configure(display_proto, foreground=protocol_color_map[display_proto])
-                    
-                    packets_processed += 1
-                    
-                except Exception as e:
-                    self.add_log(f"❌ Error processing packet: {str(e)}", "error")
+                    self.pkt_to_item[item["num"]] = item_id
+                    self.tree_item_ids.append((item["num"], item_id))
+                    self.displayed_count += 1
+                        
+                except Exception:
+                    pass
             
-            # Update status label if packets were processed
+            # Now update pending threats
+            updates_to_run = []
+            with self.ui_update_lock:
+                while self.pending_threat_updates and len(updates_to_run) < 50:
+                    pn, threat = self.pending_threat_updates.popleft()
+                    if pn in self.pkt_to_item:
+                        updates_to_run.append((self.pkt_to_item[pn], threat))
+            
+            # Execute UI updates OUTSIDE the lock to keep background thread moving
+            for item_id, threat in updates_to_run:
+                try:
+                    if self.packet_tree.exists(item_id):
+                        self.packet_tree.set(item_id, "Threat", threat)
+                        self.packet_tree.item(item_id, tags=("threat",))
+                except Exception:
+                    continue
+            
+            # Cleanup Treeview if limit reached (OPTIMIZED: Batch deletion)
+            if self.displayed_count > self.display_limit:
+                try:
+                    # Cleanup oldest items to amortize cost
+                    to_remove = self.displayed_count - self.display_limit + 50
+                    ids_to_delete = []
+                    
+                    for _ in range(to_remove):
+                        if self.tree_item_ids:
+                            pn, tid = self.tree_item_ids.popleft()
+                            ids_to_delete.append(tid)
+                            if pn in self.pkt_to_item:
+                                del self.pkt_to_item[pn]
+                            self.displayed_count -= 1
+                        else:
+                            break
+                    
+                    if ids_to_delete:
+                        # Batch delete for significantly better performance
+                        valid_ids = [tid for tid in ids_to_delete if self.packet_tree.exists(tid)]
+                        if valid_ids:
+                            self.packet_tree.delete(*valid_ids)
+                            
+                except Exception as e:
+                    pass
+                
+                # raw_packets is a deque with maxlen, so it cleans itself automatically.
+                # No manual slicing needed.
+            
+            # Update status label
             if packets_processed > 0:
-                total_packets = len(self.packet_tree.get_children())
                 self.status_label.config(
                     text=f"Status: Capturing on {self.interface_var.get()} | "
-                         f"Packets: {total_packets} | "
-                         f"Last update: +{packets_processed} packets"
+                         f"Packets: {self.displayed_count} | "
+                         f"Queue: {len(self.threat_queue)} threats pending"
                 )
         
-        # Update statistics
+        # Update statistics (now uses optimized displayed_count)
         self.update_statistics()
         
-        # Schedule next refresh
-        self.root.after(100, self.update_packet_display)
+        # Reschedule next update with longer gap to avoid UI saturation
+        self.root.after(400, self.update_packet_display)
     
-    def parse_packet_for_display(self, packet):
-        """Parse Scapy packet for display in UI (similar to original parse_packet)"""
-        packet_info = {
-            "protocol": "Other",
-            "info": ""
+    def clear_packets(self):
+        """Clears all displayed packets, logs, and resets related counters/data."""
+        # Clear treeview using batch deletion
+        children = self.packet_tree.get_children()
+        if children:
+            self.packet_tree.delete(*children)
+        
+        # Clear dissection view
+        self.details_tree.delete(*self.details_tree.get_children())
+        
+        # Clear detection log text widget
+        self.log_text.delete('1.0', tk.END)
+        
+        # Clear internal data structures
+        self.raw_packets.clear()
+        self.pkt_to_item.clear()
+        self.pending_threat_updates.clear()
+        self.threat_queue.clear()
+        self.log_queue.clear()
+        
+        # Reset counters
+        self.total_packet_count = 0
+        self.displayed_count = 0
+        self.threat_count = 0
+        self.protocol_counts = {
+            "TCP": 0, "UDP": 0, "ICMP": 0, "ARP": 0, "Other": 0
         }
         
-        # TCP
-        if packet.haslayer(TCP):
-            tcp = packet[TCP]
-            packet_info["protocol"] = "TCP"
-            flags = []
-            if tcp.flags & 0x02: flags.append("SYN")
-            if tcp.flags & 0x10: flags.append("ACK")
-            if tcp.flags & 0x08: flags.append("PSH")
-            if tcp.flags & 0x01: flags.append("FIN")
-            if tcp.flags & 0x04: flags.append("RST")
-            flags_str = ",".join(flags) if flags else ""
-            packet_info["info"] = f"[{flags_str}] Seq={tcp.seq} Ack={tcp.ack} Win={tcp.window}"
-        
-        # UDP
-        elif packet.haslayer(UDP):
-            udp = packet[UDP]
-            packet_info["protocol"] = "UDP"
-            packet_info["info"] = f"Length: {udp.len}"
-            
-            # DNS
-            if packet.haslayer(DNS):
-                dns = packet[DNS]
-                packet_info["protocol"] = "DNS"
-                if dns.qd:  # DNS query
-                    try:
-                        qname = dns.qd.qname.decode('utf-8', errors='ignore')
-                        packet_info["info"] = f"DNS Query: {qname}"
-                    except:
-                        packet_info["info"] = "DNS Query"
-                elif dns.an:  # DNS answer
-                    packet_info["info"] = f"DNS Response: {len(dns.an)} answers"
-        
-        # ICMP
-        elif packet.haslayer(ICMP):
-            icmp = packet[ICMP]
-            packet_info["protocol"] = "ICMP"
-            icmp_types = {
-                0: "Echo Reply",
-                3: "Destination Unreachable",
-                8: "Echo Request",
-                11: "Time Exceeded"
-            }
-            type_name = icmp_types.get(icmp.type, f"Type {icmp.type}")
-            packet_info["info"] = f"{type_name} Code={icmp.code}"
-        
-        # ARP
-        elif packet.haslayer(ARP):
-            arp = packet[ARP]
-            packet_info["protocol"] = "ARP"
-            op_names = {1: "Request", 2: "Reply"}
-            op_name = op_names.get(arp.op, f"Op {arp.op}")
-            packet_info["info"] = f"ARP {op_name}"
-        
-        return packet_info
+        # Update UI elements
+        self.update_statistics()
+        self.status_label.config(
+            text=f"Status: Capturing on {self.interface_var.get()} | "
+                 f"Packets: 0 | "
+                 f"Queue: 0 threats pending"
+        )
+        self.add_log("✅ All logs and packets cleared successfully.", "success")
+
+    def is_whitelisted(self, ip):
+        """Check if IP is in whitelist"""
+        try:
+            ip_addr = ipaddress.ip_address(ip)
+            for range_str in self.whitelist_ranges:
+                net = ipaddress.ip_network(range_str, strict=False)
+                if ip_addr in net:
+                    return True
+        except:
+            pass
+        return False
     
     def basic_threat_detection(self, packet):
-        """Basic threat detection as fallback"""
+        """Basic threat detection as fallback - only for non-whitelisted sources"""
         threat = ""
         
+        # Get source IP
+        src_ip = None
+        if packet.haslayer(IP):
+            src_ip = packet[IP].src
+        elif packet.haslayer(IPv6):
+            src_ip = packet[IPv6].src
+
+        if src_ip and self.is_whitelisted(src_ip):
+            return ""
+        
         # Large TCP packets
-        if packet.haslayer(IP) and packet.haslayer(TCP):
-            if packet[IP].len > 4000:
+        if packet.haslayer(TCP):
+            if packet.haslayer(IP) and packet[IP].len > 4000:
                 threat = "⚠️ Large TCP Packet"
             # SYN flood detection
             elif packet[TCP].flags == 0x02:  # Only SYN flag
                 threat = "⚠️ SYN Flood"
+
         
-        # ICMP flood detection
+        # ICMP flood detection - DISABLED for home networks
+        # (Single ICMP echo requests are normal for ping/network diagnostics)
+        # Uncomment below only for enterprise monitoring where ICMP is blocked
         elif packet.haslayer(ICMP) and packet[ICMP].type == 8:  # Echo request
-            threat = "⚠️ ICMP Flood"
+           threat = "⚠️ ICMP Flood"
         
         # ARP spoofing detection
         elif packet.haslayer(ARP):
@@ -550,12 +850,10 @@ Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return threat
     
     def update_statistics(self):
-        """Update packet statistics in the UI"""
-        total_packets = len(self.packet_tree.get_children())
-        
+        """Update packet statistics in the UI - Optimized to avoid Treeview.get_children()"""
         stats_text = (
             f"📊 Statistics: "
-            f"Packets: {total_packets} | "
+            f"Packets: {self.displayed_count} | "
             f"TCP: {self.protocol_counts['TCP']} | "
             f"UDP: {self.protocol_counts['UDP']} | "
             f"ICMP: {self.protocol_counts['ICMP']} | "
@@ -566,28 +864,86 @@ Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         self.stats_label.config(text=stats_text)
         
+    def on_packet_selected(self, event):
+        """Update the hierarchical details pane when a packet is selected"""
+        selected = self.packet_tree.selection()
+        if not selected:
+            return
+            
+        item_id = selected[0]
+        try:
+            # Extract packet number from the first column
+            packet_num_str = self.packet_tree.item(item_id, "values")[0]
+            packet_num = int(packet_num_str)
+            
+            # Find the packet in raw_packets (which is now a deque)
+            # Find it by index if we can, but since deques and treeview insertions
+            # might shift, it's safer to use the num if we stored it correctly.
+            # For simplicity in this demo, we assume the index matches the deque position
+            # (which it might not if deques rotate). 
+            # A better way is to store the packet in a dict or with the item_id.
+            
+            # Find packet by number (linear search in deque is fine for 1000 items)
+            target_pkt = None
+            # The raw_packets contains the actual scapy packets
+            # We need to find the one matching this number
+            # For now, let's try to get it from the index relative to the treeview
+            index = self.packet_tree.index(item_id)
+            if index < len(self.raw_packets):
+                target_pkt = self.raw_packets[index]
+            
+            if target_pkt:
+                self.dissect_packet(target_pkt)
+        except Exception as e:
+            pass
+
+    def dissect_packet(self, pkt):
+        """Fill the details tree with scapy packet layers"""
+        self.details_tree.delete(*self.details_tree.get_children())
+        
+        try:
+            # Recurse through layers
+            layer = pkt
+            while layer:
+                layer_name = layer.name
+                if hasattr(layer, 'overload_fields') and layer.overload_fields:
+                    layer_name += " (Overloaded)"
+                
+                # Add layer root
+                parent = self.details_tree.insert("", "end", text=layer_name, open=True)
+                
+                # Add fields
+                for f in layer.fields_desc:
+                    if f.name in layer.fields:
+                        val = layer.getfieldval(f.name)
+                        # Format value
+                        repr_val = layer.get_field(f.name).i2repr(layer, val)
+                        self.details_tree.insert(parent, "end", text=f"{f.name}: {repr_val}")
+                
+                layer = layer.payload
+                if not layer or isinstance(layer, scapy.packet.NoPayload):
+                    break
+                if isinstance(layer, Raw):
+                    # Show raw payload as hex/ascii
+                    payload_node = self.details_tree.insert("", "end", text="Raw Data", open=False)
+                    raw_bytes = layer.load
+                    # Format as hex dump
+                    from packet_info import format_payload
+                    dump = format_payload(raw_bytes)
+                    for line in dump.split('\n'):
+                        self.details_tree.insert(payload_node, "end", text=line)
+                    break
+        except Exception as e:
+            self.details_tree.insert("", "end", text=f"Dissection Error: {str(e)}")
+
     def show_packet_details(self, event):
-        """Show detailed packet info when double-clicked"""
+        """Show detailed packet info in a separate window when double-clicked"""
         selected = self.packet_tree.selection()
         if selected:
-            # Get the selected item index
-            item_index = self.packet_tree.index(selected[0])
-            
-            # Map Treeview index to raw packets index
-            if 0 <= item_index < len(self.raw_packets):
-                raw_packet = self.raw_packets[item_index]
-                
-                # Get display values for reference
-                display_values = self.packet_tree.item(selected[0], "values")
-                packet_num = display_values[0]
-                
-                self.add_log(f"📖 Showing detailed information for Packet #{packet_num}")
-                
-                # Open packet details window using your existing function
-                try:
-                    show_packet_info(self.root, raw_packet)
-                except Exception as e:
-                    self.add_log(f"❌ Error showing packet details: {str(e)}", "error")
+            index = self.packet_tree.index(selected[0])
+            if 0 <= index < len(self.raw_packets):
+                raw_packet = self.raw_packets[index]
+                show_packet_info(self.root, raw_packet)
                     
     def show_context_menu(self, event):
         """Show right-click context menu"""
@@ -603,6 +959,9 @@ Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                            command=lambda: self.show_packet_details(event))
             menu.add_command(label="Copy Source IP", 
                            command=lambda: self.copy_to_clipboard(self.packet_tree.item(item, "values")[2]))
+            menu.add_command(label="⛔ Block Source IP", 
+                           command=lambda: self.manual_block_ip(self.packet_tree.item(item, "values")[2]))
+
             menu.add_command(label="Copy Destination IP", 
                            command=lambda: self.copy_to_clipboard(self.packet_tree.item(item, "values")[3]))
             menu.add_separator()
@@ -617,6 +976,33 @@ Time:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             finally:
                 menu.grab_release()
                 
+    def manual_block_ip(self, ip):
+        """Manually block an IP from context menu"""
+        if messagebox.askyesno("Confirm Block", f"Are you sure you want to block IP: {ip}?"):
+            success, msg = self.active_response.block_ip(ip)
+            self.add_log(f"🛡️ {msg}", "success" if success else "error")
+
+    def generate_report(self):
+        """Generate PDF report"""
+        self.add_log("📄 Generating session report...")
+        # Gather stats
+        # Create a simple threat log from treeview items tagged as threat
+        threat_log = []
+        for item in self.packet_tree.get_children():
+            values = self.packet_tree.item(item, "values")
+            if self.packet_tree.item(item, "tags") and "threat" in self.packet_tree.item(item, "tags"):
+                 threat_log.append({"time": values[1], "src": values[2], "threat": values[6]})
+        
+        success, msg = self.reporter.generate_report(self.protocol_counts, threat_log)
+        if success:
+             self.add_log(f"✅ Report created: {msg}", "success")
+             try:
+                 os.startfile(msg) # Open the PDF
+             except:
+                 pass
+        else:
+             self.add_log(f"❌ Report failed: {msg}", "error")
+
     def copy_to_clipboard(self, text):
         """Copy text to clipboard"""
         self.root.clipboard_clear()
@@ -651,6 +1037,3 @@ if __name__ == "__main__":
     
     app = IDS_UI(root)
     root.mainloop()
-
-requests.get("http://127.0.0.1:8000/?id=1' OR '1'='1")
-print("✓ SQL Injection sent")

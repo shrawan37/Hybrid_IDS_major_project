@@ -1,4 +1,5 @@
 #anamalytest.py
+import os
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
@@ -8,11 +9,13 @@ from sklearn.metrics import roc_auc_score, confusion_matrix, classification_repo
 # Load the trained Isolation Forest model and scaler
 import joblib
 
-# Load the model
-iso_forest = joblib.load('isolation_forest.pkl')
 
-# Load the scaler
-scaler = joblib.load('scaler.pkl')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+iso_forest = joblib.load(os.path.join(BASE_DIR, "models", "isolation_forest.pkl"))
+scaler = joblib.load(os.path.join(BASE_DIR, "models", "scaler.pkl"))
+encoder = joblib.load(os.path.join(BASE_DIR, "models", "encoder.pkl"))
+
 
 # Define column names (adjust if needed)
 COLUMN_NAMES = [
